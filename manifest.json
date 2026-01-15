@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Mimir",
+  "version": "1.0.0",
+  "description": "Extract rendered HTML from open tabs grouped by domain",
+  "action": {
+    "default_title": "Mimir"
+  },
+  "permissions": [
+    "scripting",
+    "activeTab",
+    "storage",
+    "sidePanel",
+    "tabs",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  }
+}
