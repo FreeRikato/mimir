@@ -2,8 +2,14 @@
   "manifest_version": 3,
   "name": "Mimir",
   "version": "1.0.0",
-  "description": "Extract rendered HTML from open tabs grouped by domain",
+  "description": "Extract rendered text from open tabs grouped by domain",
+  "icons": {
+    "16": "files.png",
+    "48": "files.png",
+    "128": "files.png"
+  },
   "action": {
+    "default_icon": "files.png",
     "default_title": "Mimir"
   },
   "permissions": [

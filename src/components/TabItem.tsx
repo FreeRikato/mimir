@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { Globe } from 'lucide-react';
 import type { ChromeTab } from '../types';
 import { Checkbox } from './Checkbox';
@@ -9,41 +10,58 @@ interface TabItemProps {
 }
 
 export function TabItem({ tab, isSelected, onToggle }: TabItemProps) {
+  const handleTabClick = useCallback(() => {
+    chrome.tabs.update(tab.id, { active: true });
+    chrome.windows.update(tab.windowId, { focused: true });
+  }, [tab.id, tab.windowId]);
+
+  const handleCheckboxClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onToggle();
+  }, [onToggle]);
+
   return (
     <div
+      onClick={handleTabClick}
       className="
-        pl-8 pr-3 py-2.5 ml-3
-        border-l-2 border-gray-200
-        flex items-center gap-3
-        hover:bg-gray-100 rounded-r-md
-        cursor-pointer transition-colors duration-150
+        glass-hover pl-8 pr-3 py-2.5 ml-3
+        border-l border-white/10
+        flex items-center gap-3 cursor-pointer
+        rounded-r-lg transition-all duration-200
       "
-      onClick={onToggle}
     >
-      <Checkbox 
-        checked={isSelected} 
-        onChange={onToggle}
-      />
+      <div onClick={handleCheckboxClick}>
+        <Checkbox
+          checked={isSelected}
+          onChange={onToggle}
+        />
+      </div>
       
       <div className="w-4 h-4 flex-shrink-0">
         {tab.favIconUrl ? (
           <img
             src={tab.favIconUrl}
             alt=""
-            className="w-4 h-4 rounded-sm"
+            className="w-4 h-4 rounded-sm filter brightness-125 contrast-110 saturate-120"
             onError={(e) => {
-              e.currentTarget.style.display = 'none';
-              e.currentTarget.nextElementSibling?.classList.remove('hidden');
+              const img = e.currentTarget;
+              const fallback = img.nextElementSibling as HTMLElement;
+              
+              img.style.display = 'none';
+              if (fallback) {
+                fallback.classList.remove('hidden');
+                fallback.classList.add('text-white/90');
+              }
             }}
           />
         ) : null}
         <Globe 
-          className={`w-4 h-4 text-gray-400 ${tab.favIconUrl ? 'hidden' : ''}`} 
+          className={`w-4 h-4 ${tab.favIconUrl ? 'hidden' : 'text-white/90'} drop-shadow-sm`} 
         />
       </div>
       
       <span 
-        className="text-sm text-gray-600 truncate flex-1"
+        className="text-sm text-glass-secondary truncate flex-1 hover:text-glass-primary transition-colors"
         title={tab.title}
       >
         {tab.title}
