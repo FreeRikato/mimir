@@ -27,18 +27,15 @@ export function DomainGroup({
       {/* Domain Header */}
       <div
         className="
-          flex items-center justify-between
-          bg-white p-3 rounded-lg
-          shadow-sm border border-gray-200
-          cursor-pointer hover:bg-gray-50
-          transition-colors duration-150
+          glass-hover flex items-center justify-between
+          glass-medium p-3 rounded-xl cursor-pointer
         "
         onClick={() => setIsOpen(!isOpen)}
       >
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <ChevronDown 
             className={`
-              w-4 h-4 text-gray-500 flex-shrink-0
+              w-4 h-5 text-glass-secondary flex-shrink-0
               transition-transform duration-200
               ${isOpen ? '' : '-rotate-90'}
             `}
@@ -57,19 +54,19 @@ export function DomainGroup({
               />
             ) : null}
             <Globe 
-              className={`w-5 h-5 text-gray-400 ${group.favicon ? 'hidden' : ''}`} 
+              className={`w-5 h-5 text-glass-muted ${group.favicon ? 'hidden' : ''}`} 
             />
           </div>
           
-          <span className="font-semibold text-gray-800 truncate">
+          <span className="font-semibold text-glass-primary truncate">
             {group.domain}
           </span>
         </div>
         
         <div className="flex items-center gap-3 flex-shrink-0">
           <span className="
-            text-xs font-medium text-gray-500
-            bg-gray-100 px-2 py-0.5 rounded-full
+            text-xs font-medium text-glass-secondary
+            glass-light px-2 py-0.5 rounded-full
           ">
             {group.tabs.length}
           </span>

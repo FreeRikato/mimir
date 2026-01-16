@@ -23,17 +23,23 @@ export function Checkbox({ checked, indeterminate = false, onChange, className =
         ref={inputRef}
         type="checkbox"
         checked={checked}
-        onChange={onChange}
+        onChange={(e) => {
+          e.stopPropagation();
+          onChange();
+        }}
         className="sr-only peer"
       />
       <div
-        onClick={onChange}
+        onClick={(e) => {
+          e.stopPropagation();
+          onChange();
+        }}
         className={`
-          w-5 h-5 rounded border-2 cursor-pointer transition-all duration-150
-          flex items-center justify-center
+          w-5 h-5 rounded-md border-2 cursor-pointer transition-all duration-200
+          flex items-center justify-center glass-hover
           ${checked || indeterminate 
-            ? 'bg-blue-600 border-blue-600' 
-            : 'bg-white border-gray-300 hover:border-gray-400'
+            ? 'glass-medium border-white/30 shadow-lg' 
+            : 'glass-heavy border-white/20 hover:border-white/30'
           }
         `}
       >

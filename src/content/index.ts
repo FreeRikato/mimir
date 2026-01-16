@@ -10,13 +10,27 @@ const createActionButton = () => {
     right: 20px;
     z-index: 999999;
     padding: 10px 20px;
-    background: #3b82f6;
+    background: rgba(0, 0, 0, 0.9);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     color: white;
-    border: none;
-    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
     cursor: pointer;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+    transition: all 0.3s ease;
+    font-weight: 500;
   `
+  button.onmouseover = () => {
+    button.style.transform = 'translateY(-2px) scale(1.05)'
+    button.style.boxShadow = '0 12px 40px 0 rgba(0, 0, 0, 0.5)'
+    button.style.borderColor = 'rgba(255, 255, 255, 0.2)'
+  }
+  button.onmouseout = () => {
+    button.style.transform = 'translateY(0) scale(1)'
+    button.style.boxShadow = '0 8px 32px 0 rgba(0, 0, 0, 0.4)'
+    button.style.borderColor = 'rgba(255, 255, 255, 0.1)'
+  }
   button.onclick = () => {
     console.log('Mimir button clicked')
   }

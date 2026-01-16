@@ -20,14 +20,14 @@ export function ExtractionButton({
       onClick={onExtract}
       disabled={isDisabled}
       className={`
-        w-full py-3 px-4 rounded-lg font-medium
+        w-full py-3 px-4 rounded-xl font-medium
         flex items-center justify-center gap-2
-        transition-all duration-200
+        transition-all duration-300 transform glass-focus
         ${isDisabled
-          ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+          ? 'glass-heavy text-glass-muted cursor-not-allowed'
           : isSuccess
-            ? 'bg-green-600 hover:bg-green-700 text-white'
-            : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/25'
+            ? 'glass-teal text-teal-300 border border-teal-500/30 hover:scale-[1.02]'
+            : 'glass-heavy text-white border border-white/10 hover:scale-[1.02]'
         }
       `}
     >
