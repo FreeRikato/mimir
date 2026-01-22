@@ -92,44 +92,58 @@ export function Footer({
         )}
 
         {/* Tabs to Right Button */}
-        <button
-          onClick={onExtractToRight}
-          disabled={isExtractToRightDisabled}
-          className={getButtonClassName(isExtractToRightDisabled, toRightExtractionStatus, 'orange')}
-          title="Extract content from tabs to the right of current tab"
-        >
-          {isExtractingToRight ? (
-            <Loader2 className="w-5 h-5 animate-spin" />
-          ) : toRightExtractionStatus === 'success' ? (
-            <CheckCircle className="w-5 h-5" />
-          ) : toRightExtractionStatus === 'partial' ? (
-            <AlertTriangle className="w-5 h-5" />
-          ) : toRightExtractionStatus === 'error' ? (
-            <AlertCircle className="w-5 h-5" />
-          ) : (
-            <ArrowRight className="w-5 h-5" />
+        <div className="relative">
+          {tabsToRightCount > 0 && (
+            <span className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 rounded-full glass-orange text-[10px] text-white border border-white/20 flex items-center justify-center">
+              {tabsToRightCount}
+            </span>
           )}
-        </button>
+          <button
+            onClick={onExtractToRight}
+            disabled={isExtractToRightDisabled}
+            className={getButtonClassName(isExtractToRightDisabled, toRightExtractionStatus, 'orange')}
+            title="Extract content from tabs to the right of current tab"
+          >
+            {isExtractingToRight ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : toRightExtractionStatus === 'success' ? (
+              <CheckCircle className="w-5 h-5" />
+            ) : toRightExtractionStatus === 'partial' ? (
+              <AlertTriangle className="w-5 h-5" />
+            ) : toRightExtractionStatus === 'error' ? (
+              <AlertCircle className="w-5 h-5" />
+            ) : (
+              <ArrowRight className="w-5 h-5" />
+            )}
+          </button>
+        </div>
 
         {/* Highlighted Tabs Button */}
-        <button
-          onClick={onExtractHighlighted}
-          disabled={isExtractHighlightedDisabled}
-          className={getButtonClassName(isExtractHighlightedDisabled, highlightedExtractionStatus, 'purple')}
-          title="Extract content from tabs selected in Chrome's tab bar (Cmd+click / Shift+click)"
-        >
-          {isExtractingHighlighted ? (
-            <Loader2 className="w-5 h-5 animate-spin" />
-          ) : highlightedExtractionStatus === 'success' ? (
-            <CheckCircle className="w-5 h-5" />
-          ) : highlightedExtractionStatus === 'partial' ? (
-            <AlertTriangle className="w-5 h-5" />
-          ) : highlightedExtractionStatus === 'error' ? (
-            <AlertCircle className="w-5 h-5" />
-          ) : (
-            <Highlighter className="w-5 h-5" />
+        <div className="relative">
+          {highlightedCount > 0 && (
+            <span className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 rounded-full glass-pink text-[10px] text-white border border-white/20 flex items-center justify-center">
+              {highlightedCount}
+            </span>
           )}
-        </button>
+          <button
+            onClick={onExtractHighlighted}
+            disabled={isExtractHighlightedDisabled}
+            className={getButtonClassName(isExtractHighlightedDisabled, highlightedExtractionStatus, 'purple')}
+            title="Extract content from tabs selected in Chrome's tab bar (Cmd+click / Shift+click)"
+          >
+            {isExtractingHighlighted ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : highlightedExtractionStatus === 'success' ? (
+              <CheckCircle className="w-5 h-5" />
+            ) : highlightedExtractionStatus === 'partial' ? (
+              <AlertTriangle className="w-5 h-5" />
+            ) : highlightedExtractionStatus === 'error' ? (
+              <AlertCircle className="w-5 h-5" />
+            ) : (
+              <Highlighter className="w-5 h-5" />
+            )}
+          </button>
+        </div>
 
         {/* Copy Button */}
         <button
