@@ -1,6 +1,7 @@
 export interface ChromeTab {
   id: number;
   windowId: number;
+  index: number;
   title: string;
   url: string;
   favIconUrl?: string;
