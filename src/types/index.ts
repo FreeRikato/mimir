@@ -82,3 +82,38 @@ export interface ExtractionErrorInfo {
 }
 
 export type ExtractionStatus = 'idle' | 'extracting' | 'success' | 'partial' | 'error';
+
+// Export & Storage types
+export type ExportFormat = 'json' | 'markdown' | 'text' | 'csv' | 'html';
+export type ExportAction = 'clipboard' | 'file';
+
+export interface ExportOptions {
+  format: ExportFormat;
+  action: ExportAction;
+  filename?: string;
+}
+
+export interface HistoryEntry {
+  id: string;
+  timestamp: number;
+  format: ExportFormat;
+  exportType: ExportAction;
+  tabCount: number;
+  domains: string[];
+  data: ExtractedData[];
+  filename?: string;
+  dataSize: number;
+}
+
+export interface SearchQuery {
+  keywords?: string;
+  dateFrom?: number;
+  dateTo?: number;
+  domains?: string[];
+}
+
+export interface SearchFilters {
+  keywords: string;
+  dateRange: { start: Date | null; end: Date | null };
+  domains: string[];
+}

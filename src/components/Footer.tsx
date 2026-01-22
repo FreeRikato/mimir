@@ -1,4 +1,4 @@
-import { RefreshCw, X, Copy, CheckCircle, Loader2, AlertTriangle, AlertCircle, ArrowRight, Highlighter } from 'lucide-react';
+import { RefreshCw, X, Copy, CheckCircle, Loader2, AlertTriangle, AlertCircle, ArrowRight, Highlighter, History } from 'lucide-react';
 import type { ExtractionStatus, ExtractionErrorInfo } from '../types';
 
 interface FooterProps {
@@ -22,6 +22,10 @@ interface FooterProps {
   isExtractingHighlighted: boolean;
   highlightedExtractionStatus: ExtractionStatus;
   highlightedExtractionErrors: ExtractionErrorInfo[];
+  // History props
+  historyCount: number;
+  onOpenHistory: () => void;
+  onOpenExportModal: () => void;
 }
 
 export function Footer({
@@ -45,6 +49,10 @@ export function Footer({
   isExtractingHighlighted,
   highlightedExtractionStatus,
   highlightedExtractionErrors: _highlightedExtractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
+  // History props
+  historyCount,
+  onOpenHistory,
+  onOpenExportModal,
 }: FooterProps) {
   const isExtractDisabled = selectedCount === 0 || isExtracting || isExtractingToRight || isExtractingHighlighted;
   const showCancel = selectedCount > 0 && !isExtracting && !isExtractingToRight && !isExtractingHighlighted;
@@ -147,10 +155,10 @@ export function Footer({
 
         {/* Copy Button */}
         <button
-          onClick={onExtract}
+          onClick={selectedCount > 0 ? onOpenExportModal : onExtract}
           disabled={isExtractDisabled}
           className={getButtonClassName(isExtractDisabled, extractionStatus, 'teal')}
-          title={`Copy ${selectedCount} selected tab${selectedCount !== 1 ? 's' : ''}`}
+          title={`${selectedCount > 0 ? 'Export options' : 'Copy'} ${selectedCount} selected tab${selectedCount !== 1 ? 's' : ''}`}
         >
           {isExtracting ? (
             <Loader2 className="w-5 h-5 animate-spin" />
@@ -164,6 +172,22 @@ export function Footer({
             <Copy className="w-5 h-5" />
           )}
         </button>
+
+        {/* History Button */}
+        <div className="relative">
+          {historyCount > 0 && (
+            <span className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 rounded-full glass-cyan text-[10px] text-white border border-white/20 flex items-center justify-center">
+              {historyCount > 99 ? '99+' : historyCount}
+            </span>
+          )}
+          <button
+            onClick={onOpenHistory}
+            className="flex-shrink-0 w-11 h-11 rounded-lg glass-hover glass-focus text-glass-secondary hover:text-glass-primary flex items-center justify-center"
+            title="Extraction history"
+          >
+            <History className="w-5 h-5" />
+          </button>
+        </div>
       </div>
     </div>
   );
