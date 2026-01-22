@@ -19,6 +19,7 @@ interface HistoryPanelProps {
   onSearch: (query: { keywords?: string; dateFrom?: number; dateTo?: number }) => void;
   onClearSearch: () => void;
   onReExport: (data: ExtractedData[], format: ExportFormat, filename?: string) => void;
+  onCopy: (data: ExtractedData[], format: ExportFormat) => void;
 }
 
 const FORMAT_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -43,6 +44,7 @@ export function HistoryPanel({
   onSearch,
   onClearSearch,
   onReExport,
+  onCopy,
 }: HistoryPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
@@ -167,6 +169,7 @@ export function HistoryPanel({
                     FormatIcon={FormatIcon}
                     onReExport={() => handleReExport(entry)}
                     onDelete={() => onDelete(entry.id)}
+                    onCopy={() => onCopy(entry.data, entry.format)}
                   />
                 );
               })}
