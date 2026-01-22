@@ -1,4 +1,4 @@
-import { RefreshCw, X, Copy, CheckCircle, Loader2, AlertTriangle, AlertCircle, ArrowRight, Highlighter, History } from 'lucide-react';
+import { RefreshCw, X, Copy, CheckCircle, Loader2, AlertTriangle, AlertCircle, ArrowRight, Highlighter, History, XCircle } from 'lucide-react';
 import type { ExtractionStatus, ExtractionErrorInfo } from '../types';
 
 interface FooterProps {
@@ -25,6 +25,9 @@ interface FooterProps {
   // History props
   onOpenHistory: () => void;
   onOpenExportModal: () => void;
+  // Close tabs toggle props
+  closeTabsEnabled: boolean;
+  onToggleCloseTabs: () => void;
 }
 
 export function Footer({
@@ -51,6 +54,9 @@ export function Footer({
   // History props
   onOpenHistory,
   onOpenExportModal,
+  // Close tabs toggle props
+  closeTabsEnabled,
+  onToggleCloseTabs,
 }: FooterProps) {
   const isExtractDisabled = selectedCount === 0 || isExtracting || isExtractingToRight || isExtractingHighlighted;
   const showCancel = selectedCount > 0 && !isExtracting && !isExtractingToRight && !isExtractingHighlighted;
@@ -170,6 +176,29 @@ export function Footer({
             <Copy className="w-5 h-5" />
           )}
         </button>
+
+        {/* Close Tabs Toggle Button */}
+        <div className="relative">
+          <button
+            onClick={onToggleCloseTabs}
+            className={`
+              flex-shrink-0 w-11 h-11 rounded-lg
+              flex items-center justify-center
+              transition-all duration-300
+              ${closeTabsEnabled
+                ? 'glass-teal border-teal-400/30 text-teal-300'
+                : 'glass-heavy text-glass-muted hover:text-glass-secondary'
+              }
+              glass-hover glass-focus
+            `}
+            title={`Close tabs after extraction: ${closeTabsEnabled ? 'ON' : 'OFF'}`}
+          >
+            <XCircle className="w-5 h-5" />
+          </button>
+          {closeTabsEnabled && (
+            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-teal-400 rounded-full border border-white/20" />
+          )}
+        </div>
 
         {/* History Button */}
         <button
