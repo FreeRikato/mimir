@@ -68,6 +68,7 @@ export function useTabs() {
         .map((tab) => ({
           id: tab.id,
           windowId: tab.windowId,
+          index: tab.index,
           title: tab.title || 'Untitled',
           url: tab.url,
           favIconUrl: tab.favIconUrl,
