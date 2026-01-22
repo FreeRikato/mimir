@@ -105,7 +105,7 @@ export function HistoryPanel({
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0">
           <div className="flex items-center gap-2">
-            <Clock className="w-5 h-5 text-teal-400" />
+            <Clock className="w-5 h-5 text-white" />
             <h2 className="text-lg font-semibold text-glass-primary">Extraction History</h2>
             <span className="px-2 py-0.5 rounded-full glass-heavy text-xs text-glass-muted border border-white/10">
               {count}

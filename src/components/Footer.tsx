@@ -23,7 +23,6 @@ interface FooterProps {
   highlightedExtractionStatus: ExtractionStatus;
   highlightedExtractionErrors: ExtractionErrorInfo[];
   // History props
-  historyCount: number;
   onOpenHistory: () => void;
   onOpenExportModal: () => void;
 }
@@ -50,7 +49,6 @@ export function Footer({
   highlightedExtractionStatus,
   highlightedExtractionErrors: _highlightedExtractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
   // History props
-  historyCount,
   onOpenHistory,
   onOpenExportModal,
 }: FooterProps) {
@@ -174,20 +172,13 @@ export function Footer({
         </button>
 
         {/* History Button */}
-        <div className="relative">
-          {historyCount > 0 && (
-            <span className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 rounded-full glass-cyan text-[10px] text-white border border-white/20 flex items-center justify-center">
-              {historyCount > 99 ? '99+' : historyCount}
-            </span>
-          )}
-          <button
-            onClick={onOpenHistory}
-            className="flex-shrink-0 w-11 h-11 rounded-lg glass-hover glass-focus text-glass-secondary hover:text-glass-primary flex items-center justify-center"
-            title="Extraction history"
-          >
-            <History className="w-5 h-5" />
-          </button>
-        </div>
+        <button
+          onClick={onOpenHistory}
+          className="flex-shrink-0 w-11 h-11 rounded-lg glass-hover glass-focus text-glass-secondary hover:text-glass-primary flex items-center justify-center"
+          title="Extraction history"
+        >
+          <History className="w-5 h-5" />
+        </button>
       </div>
     </div>
   );
