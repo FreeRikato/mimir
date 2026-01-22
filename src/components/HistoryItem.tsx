@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, Download, Trash2, Clock } from 'lucide-react';
+import { ChevronDown, ChevronRight, Download, Trash2, Clock, Copy } from 'lucide-react';
 import type { HistoryEntry } from '../types';
 
 interface HistoryItemProps {
@@ -7,6 +7,7 @@ interface HistoryItemProps {
   FormatIcon: React.ComponentType<{ className?: string }>;
   onReExport: () => void;
   onDelete: () => void;
+  onCopy: () => void;
 }
 
 function formatRelativeTime(timestamp: number): string {
@@ -46,7 +47,7 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-export function HistoryItem({ entry, FormatIcon, onReExport, onDelete }: HistoryItemProps) {
+export function HistoryItem({ entry, FormatIcon, onReExport, onDelete, onCopy }: HistoryItemProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const handleDelete = () => {
@@ -101,6 +102,13 @@ export function HistoryItem({ entry, FormatIcon, onReExport, onDelete }: History
 
         {/* Actions */}
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={onCopy}
+            className="p-2.5 rounded-lg glass-hover text-glass-secondary hover:text-violet-400 transition-colors"
+            title="Copy to clipboard"
+          >
+            <Copy className="w-4 h-4" />
+          </button>
           <button
             onClick={onReExport}
             className="p-2.5 rounded-lg glass-hover text-glass-secondary hover:text-teal-400 transition-colors"

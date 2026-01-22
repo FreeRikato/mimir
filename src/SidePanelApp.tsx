@@ -507,6 +507,17 @@ export function SidePanelApp() {
     }
   }, []);
 
+  const handleCopy = useCallback(async (data: ExtractedData[], format: ExportFormat) => {
+    try {
+      const formatted = formatExport(data, format);
+      await navigator.clipboard.writeText(formatted);
+      toast.success('Copied to clipboard');
+    } catch (err) {
+      console.error('Copy to clipboard failed:', err);
+      toast.error('Failed to copy to clipboard');
+    }
+  }, [formatExport]);
+
   return (
     <div className="h-screen w-full flex flex-col text-glass-primary">
       {/* Error Alert */}
@@ -602,6 +613,7 @@ export function SidePanelApp() {
         onSearch={history.search}
         onClearSearch={history.clearSearch}
         onReExport={handleReExport}
+        onCopy={handleCopy}
       />
     </div>
   );
