@@ -9,6 +9,60 @@ const RETRY_BASE_DELAY_MS = 500;
 const RETRY_MAX_DELAY_MS = 5000;
 const REQUEST_TIMEOUT_MS = 100000;
 
+const SUBTITLE_CACHE_PREFIX = 'subtitle_';
+const SUBTITLE_CACHE_TTL = 3600000; // 1 hour
+
+interface SubtitleCacheEntry {
+  title: string;
+  text: string;
+  timestamp: number;
+}
+
+async function extractVideoId(youtubeUrl: string): Promise<string> {
+  const normalized = normalizeYouTubeUrl(youtubeUrl);
+  const url = new URL(normalized);
+  const videoId = url.searchParams.get('v');
+  if (!videoId) {
+    throw new SubtitleError('Could not extract video ID', 'INVALID_URL', undefined, youtubeUrl);
+  }
+  return videoId;
+}
+
+async function getCachedSubtitle(videoId: string): Promise<{ title: string; text: string } | null> {
+  try {
+    const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}`;
+    const cached = await chrome.storage.local.get([cacheKey]);
+    const entry = cached[cacheKey] as SubtitleCacheEntry | undefined;
+
+    if (!entry) return null;
+
+    if (Date.now() - entry.timestamp > SUBTITLE_CACHE_TTL) {
+      await chrome.storage.local.remove([cacheKey]);
+      return null;
+    }
+
+    return { title: entry.title, text: entry.text };
+  } catch (err) {
+    console.warn('Failed to load subtitle from cache:', err);
+    return null;
+  }
+}
+
+async function setCachedSubtitle(videoId: string, data: { title: string; text: string }): Promise<void> {
+  try {
+    const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}`;
+    const entry: SubtitleCacheEntry = {
+      title: data.title,
+      text: data.text,
+      timestamp: Date.now(),
+    };
+
+    await chrome.storage.local.set({ [cacheKey]: entry });
+  } catch (err) {
+    console.warn('Failed to write subtitle cache:', err);
+  }
+}
+
 export function getSubtitlesApiUrl(youtubeUrl: string): string {
   const baseUrl = SUBTITLES_BASE_URL || 'https://ytdp-nodejs.onrender.com';
   const apiEndpoint = `${baseUrl}/api/subtitles`;
@@ -132,9 +186,15 @@ export async function fetchYoutubeSubtitles(
     throw new SubtitleError('Invalid YouTube URL', 'INVALID_URL', undefined, youtubeUrl);
   }
 
+  const videoId = await extractVideoId(youtubeUrl);
+
+  const cached = await getCachedSubtitle(videoId);
+  if (cached) {
+    return cached;
+  }
+
   return fetchWithRetry(
     async () => {
-      // Normalize URL to ensure API compatibility (e.g., youtu.be -> youtube.com)
       const normalizedUrl = normalizeYouTubeUrl(youtubeUrl);
       const apiUrl = getSubtitlesApiUrl(normalizedUrl);
       const response = await fetchWithTimeout(apiUrl, timeoutMs);
@@ -154,7 +214,7 @@ export async function fetchYoutubeSubtitles(
           const errorBody = await response.json();
           apiMessage = errorBody.error || errorBody.message || errorBody.detail;
         } catch {
-          // Ignore parse errors
+          // Ignore JSON parse errors
         }
 
         const message = apiMessage ? `API request failed: ${response.status} - ${apiMessage}` : `API request failed: ${response.status}`;
@@ -188,7 +248,11 @@ export async function fetchYoutubeSubtitles(
       const text = cleanSubtitleText(data.subtitles);
       const title = data.metadata.title;
 
-      return { title, text };
+      const result = { title, text };
+
+      await setCachedSubtitle(videoId, result);
+
+      return result;
     },
     maxRetries,
     onRetry
