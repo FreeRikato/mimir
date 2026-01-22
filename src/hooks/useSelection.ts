@@ -13,11 +13,15 @@ export function useSelection() {
 
   const getDomainSelectionState = useCallback(
     (group: DomainGroup): SelectionState => {
-      const tabIds = group.tabs.map((t) => t.id);
-      const selectedCount = tabIds.filter((id) => selectedTabIds.has(id)).length;
+      let selectedCount = 0;
+      for (const tab of group.tabs) {
+        if (selectedTabIds.has(tab.id)) {
+          selectedCount++;
+        }
+      }
 
       if (selectedCount === 0) return false;
-      if (selectedCount === tabIds.length) return true;
+      if (selectedCount === group.tabs.length) return true;
       return 'indeterminate';
     },
     [selectedTabIds]
@@ -36,24 +40,21 @@ export function useSelection() {
   }, []);
 
   const toggleDomain = useCallback((group: DomainGroup) => {
-    const tabIds = group.tabs.map((t) => t.id);
     const state = getDomainSelectionState(group);
 
     setSelectedTabIds((prev) => {
       const next = new Set(prev);
-      
+
       if (state === true) {
-        // All selected -> deselect all
-        for (const id of tabIds) {
-          next.delete(id);
+        for (const tab of group.tabs) {
+          next.delete(tab.id);
         }
       } else {
-        // None or some selected -> select all
-        for (const id of tabIds) {
-          next.add(id);
+        for (const tab of group.tabs) {
+          next.add(tab.id);
         }
       }
-      
+
       return next;
     });
   }, [getDomainSelectionState]);
@@ -64,12 +65,12 @@ export function useSelection() {
 
   const selectedCount = useMemo(() => selectedTabIds.size, [selectedTabIds]);
 
-  const selectedIds = useMemo(() => Array.from(selectedTabIds), [selectedTabIds]);
+  const getSelectedIdsAsArray = useCallback(() => Array.from(selectedTabIds), [selectedTabIds]);
 
   return {
     selectedTabIds,
     selectedCount,
-    selectedIds,
+    getSelectedIdsAsArray,
     isTabSelected,
     getDomainSelectionState,
     toggleTab,

@@ -9,6 +9,7 @@ import { ExtractionErrorAlert } from './components/ExtractionErrorAlert';
 import { getPageHTML } from './utils/scripting';
 import { isYouTubeUrl } from './utils/youtube';
 import { fetchYoutubeSubtitles } from './utils/subtitles';
+import { getCachedContent, setCachedContent } from './utils/cache';
 import type { ExtractedData, ExtractionResult, ExtractionErrorInfo, ExtractionStatus } from './types';
 import { SubtitleError } from './types';
 
@@ -16,7 +17,7 @@ export function SidePanelApp() {
   const { groups, isLoading, error, refresh } = useTabs();
   const {
     selectedCount,
-    selectedIds,
+    getSelectedIdsAsArray,
     isTabSelected,
     getDomainSelectionState,
     toggleTab,
@@ -37,6 +38,7 @@ export function SidePanelApp() {
   }, [refresh, clearSelection]);
 
   const handleExtract = useCallback(async () => {
+    const selectedIds = getSelectedIdsAsArray();
     if (selectedIds.length === 0) return;
 
     setIsExtracting(true);
@@ -48,7 +50,7 @@ export function SidePanelApp() {
 
     try {
       const results = await Promise.all(
-        selectedIds.map(async (id): Promise<ExtractedData | null> => {
+        selectedIds.map(async (id: number): Promise<ExtractedData | null> => {
           let tab: chrome.tabs.Tab | null = null;
           try {
             tab = await chrome.tabs.get(id);
@@ -77,12 +79,19 @@ export function SidePanelApp() {
                 const errorInfo = createExtractionError(id, tab, err);
                 errors.push(errorInfo);
                 console.error(`Failed to extract YouTube subtitles for tab ${id}:`, err);
-                toast.error(
-                  'YouTube subtitle extraction failed - backend may be unavailable',
-                  { id: `extract-${id}`, duration: 5000 }
-                );
                 return null;
               }
+            }
+
+            const cachedContent = await getCachedContent(id);
+            if (cachedContent) {
+              return {
+                id,
+                timestamp: new Date().toISOString(),
+                title: cachedContent.title,
+                url: cachedContent.url,
+                text: cachedContent.text,
+              };
             }
 
             const injection = await chrome.scripting.executeScript({
@@ -97,6 +106,8 @@ export function SidePanelApp() {
               return null;
             }
 
+            await setCachedContent(id, { text: result.text, title: result.title, url: result.url });
+
             return {
               id,
               timestamp: new Date().toISOString(),
@@ -108,10 +119,6 @@ export function SidePanelApp() {
             const errorInfo = createExtractionError(id, tab, err);
             errors.push(errorInfo);
             console.error(`Failed to extract tab ${id}:`, err);
-            toast.error(
-              `Failed: ${tab?.title?.substring(0, 30)}...`,
-              { id: `extract-${id}`, duration: 3000 }
-            );
             return null;
           }
         })
@@ -125,20 +132,21 @@ export function SidePanelApp() {
 
       toast.dismiss('extract-status');
 
-      if (errors.length > 0) {
+      if (errors.length > 0 && validResults.length === 0) {
+        setExtractionStatus('error');
+        toast.error(`Extraction failed for all ${selectedIds.length} tab${selectedIds.length > 1 ? 's' : ''}`);
+      } else if (errors.length > 0) {
         setExtractionStatus('partial');
-        if (validResults.length > 0) {
-          toast.success(`Extracted content from ${validResults.length} tab${validResults.length > 1 ? 's' : ''}`);
-        }
+        toast(`Extracted ${validResults.length} tab${validResults.length > 1 ? 's' : ''}, ${errors.length} failed`, {
+          icon: '⚠️',
+        });
       } else {
         setExtractionStatus('success');
-        toast.success(`Extracted content from ${validResults.length} tab${validResults.length > 1 ? 's' : ''}`);
+        toast.success(`Extracted content from ${validResults.length} tab${validResults.length > 1 ? 's' : ''} and copied to clipboard`);
         setTimeout(() => {
           setExtractionStatus('idle');
         }, 2000);
       }
-
-      toast.success('Copied to clipboard!', { id: 'clipboard-success', duration: 2000 });
     } catch (err) {
       console.error('Extraction failed:', err);
       setExtractionStatus('error');
@@ -146,7 +154,7 @@ export function SidePanelApp() {
     } finally {
       setIsExtracting(false);
     }
-  }, [selectedIds]);
+  }, [getSelectedIdsAsArray]);
 
   function createExtractionError(id: number, tab: chrome.tabs.Tab | null, err: unknown): ExtractionErrorInfo {
     let code: SubtitleError['code'] = 'NETWORK_ERROR';
