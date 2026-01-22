@@ -1,43 +1,64 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { ChromeTab, DomainGroup } from '../types';
-import { groupTabs } from '../utils/domainHelpers';
+import { groupTabs, clearGroupTabsCache } from '../utils/domainHelpers';
+import { getCachedTabs, setCachedTabs, CACHE_TTL, removeExpiredContentCache } from '../utils/cache';
 
-const CACHE_KEY = 'mimir_cached_tabs';
-const CACHE_TTL = 30000; // 30 seconds
+const DEBOUNCE_DELAY = 500; // 500ms debounce for tab events
 
 export function useTabs() {
   const [groups, setGroups] = useState<DomainGroup[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchTabs = useCallback(async (forceRefresh = false) => {
+  const isMountedRef = useRef(true);
+  const activeRequestIdRef = useRef(0);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlightFetchRef = useRef<Promise<void> | null>(null);
+  const fetchTabsRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    removeExpiredContentCache();
+    return () => {
+      isMountedRef.current = false;
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  const fetchTabsImpl = useCallback(async (forceRefresh = false) => {
+    const requestId = ++activeRequestIdRef.current;
+
+    const shouldUpdateState = () => {
+      return requestId === activeRequestIdRef.current && isMountedRef.current;
+    };
+
     if (!forceRefresh) {
-      try {
-        const cached = await chrome.storage.session.get([CACHE_KEY]);
-        const cacheEntry = cached[CACHE_KEY] as { data: DomainGroup[]; timestamp: number } | undefined;
-        if (cacheEntry) {
-          const { data, timestamp } = cacheEntry;
-          if (Date.now() - timestamp < CACHE_TTL) {
-            setGroups(data);
-            return;
-          }
-        }
-      } catch (err) {
-        // Cache read failed, continue with fresh fetch
-        console.warn('Failed to load tabs from cache:', err);
+      const cached = await getCachedTabs();
+      if (!shouldUpdateState()) return;
+
+      if (cached) {
+        setGroups(cached);
+        return;
       }
     }
 
-    setIsLoading(true);
-    setError(null);
-    
+    if (!shouldUpdateState()) return;
+
+    const fetchPromise = (async () => {
+      setIsLoading(true);
+      setError(null);
+
     try {
+      clearGroupTabsCache();
+
       const tabs = await chrome.tabs.query({});
-      
-      // Filter valid tabs (must have id and url)
+      if (!shouldUpdateState()) return;
+
       const validTabs: ChromeTab[] = tabs
-        .filter((tab): tab is chrome.tabs.Tab & { id: number; url: string } => 
-          tab.id !== undefined && 
+        .filter((tab): tab is chrome.tabs.Tab & { id: number; url: string } =>
+          tab.id !== undefined &&
           tab.url !== undefined &&
           !tab.url.startsWith('chrome://') &&
           !tab.url.startsWith('chrome-extension://') &&
@@ -53,59 +74,98 @@ export function useTabs() {
         }));
 
       const grouped = groupTabs(validTabs);
+
+      if (!shouldUpdateState()) return;
       setGroups(grouped);
-      
-      // Update cache
-      await chrome.storage.session.set({
-        [CACHE_KEY]: {
-          data: grouped,
-          timestamp: Date.now()
+
+      await setCachedTabs(grouped);
+      } catch (err) {
+        if (shouldUpdateState()) {
+          setError(err instanceof Error ? err.message : 'Failed to fetch tabs');
         }
-      });
-      
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch tabs');
-    } finally {
-      setIsLoading(false);
-    }
+      } finally {
+        if (shouldUpdateState()) {
+          setIsLoading(false);
+        }
+        if (requestId === activeRequestIdRef.current) {
+          inFlightFetchRef.current = null;
+        }
+      }
+    })();
+
+    inFlightFetchRef.current = fetchPromise;
+    await fetchPromise;
   }, []);
 
-  // Load from cache immediately on mount
+  fetchTabsRef.current = fetchTabsImpl;
+
+  const fetchTabs = useCallback((forceRefresh?: boolean) => {
+    return fetchTabsRef.current?.(forceRefresh);
+  }, []);
+
   useEffect(() => {
     const loadFromCache = async () => {
-      try {
-        const cached = await chrome.storage.session.get([CACHE_KEY]);
-        const cacheEntry = cached[CACHE_KEY] as { data: DomainGroup[]; timestamp: number } | undefined;
-        if (cacheEntry) {
-          const { data, timestamp } = cacheEntry;
-          if (Date.now() - timestamp < CACHE_TTL) {
-            setGroups(data);
-            setIsLoading(false);
-            return;
-          }
-        }
-      } catch (err) {
-        // Cache read failed, continue with fresh fetch
-        console.warn('Failed to load tabs from cache:', err);
+      const cached = await getCachedTabs();
+      if (!isMountedRef.current) return;
+
+      if (cached) {
+        setGroups(cached);
+        setIsLoading(false);
+        return;
       }
-      // If cache miss or expired, fetch fresh data
-      fetchTabs();
+
+      if (isMountedRef.current) {
+        fetchTabs();
+      }
     };
-    
+
     loadFromCache();
   }, [fetchTabs]);
 
-  // Listen for tab updates to auto-refresh cache
   useEffect(() => {
-    const listener = () => fetchTabs(true); // Force refresh on changes
-    chrome.tabs.onUpdated.addListener(listener);
-    chrome.tabs.onRemoved.addListener(listener);
-    chrome.tabs.onCreated.addListener(listener);
-    
+    const CACHE_KEY = 'mimir_cached_tabs';
+
+    const handleStorageChange = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      areaName: string
+    ) => {
+      if (areaName === 'session' && changes[CACHE_KEY]) {
+        const newValue = changes[CACHE_KEY].newValue as { data: DomainGroup[]; timestamp: number } | undefined;
+        if (newValue && Date.now() - newValue.timestamp < CACHE_TTL) {
+          setGroups(newValue.data);
+        }
+      }
+    };
+
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => chrome.storage.onChanged.removeListener(handleStorageChange);
+  }, []);
+
+  useEffect(() => {
+    const debouncedListener = () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+      debounceTimerRef.current = setTimeout(() => {
+        if (inFlightFetchRef.current) {
+          inFlightFetchRef.current.then(() => fetchTabs(true));
+        } else {
+          fetchTabs(true);
+        }
+      }, DEBOUNCE_DELAY);
+    };
+
+    chrome.tabs.onUpdated.addListener(debouncedListener);
+    chrome.tabs.onRemoved.addListener(debouncedListener);
+    chrome.tabs.onCreated.addListener(debouncedListener);
+
     return () => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      chrome.tabs.onRemoved.removeListener(listener);
-      chrome.tabs.onCreated.removeListener(listener);
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+      chrome.tabs.onUpdated.removeListener(debouncedListener);
+      chrome.tabs.onRemoved.removeListener(debouncedListener);
+      chrome.tabs.onCreated.removeListener(debouncedListener);
     };
   }, [fetchTabs]);
 
