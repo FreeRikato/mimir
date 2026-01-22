@@ -17,16 +17,34 @@ import { fetchYoutubeSubtitles } from './utils/subtitles';
 import { getCachedContent, setCachedContent } from './utils/cache';
 import { getTabsToRight, closeTabsSafely } from './utils/tabHelpers';
 import { formatExport, generateFilename, getMimeType, downloadAsFile } from './utils/exporters';
-import { withTimeout } from './utils/asyncHelpers';
-import type { ExtractedData, ExtractionResult, ExtractionErrorInfo, ExtractionStatus, ExportFormat } from './types';
+import type { ExtractedData, ExtractionResult, ExtractionErrorInfo, ExtractionStatus, ExportFormat, ExtractionProgress } from './types';
+import { ExtractionProgress as ExtractionProgressComponent } from './components/ExtractionProgress';
 import { SubtitleError } from './types';
 
-const EXTRACTION_TIMEOUT_MS = 10000; // 10 seconds
+// Custom hook to auto-hide progress bars after cancellation
+function useAutoHideProgress(
+  progress: ExtractionProgress | null,
+  setProgress: React.Dispatch<React.SetStateAction<ExtractionProgress | null>>,
+  delay: number = 1500
+) {
+  useEffect(() => {
+    if (progress?.isCancelled) {
+      const timeout = setTimeout(() => setProgress(null), delay);
+      return () => clearTimeout(timeout);
+    }
+  }, [progress?.isCancelled, setProgress, delay]);
+}
 
 // Helper function to extract a single tab
 async function extractTab(
-  id: number
+  id: number,
+  signal?: AbortSignal
 ): Promise<{ result: ExtractedData | null; error: ExtractionErrorInfo | null }> {
+  // Check for cancellation at start
+  if (signal?.aborted) {
+    return { result: null, error: null };
+  }
+
   let tab: chrome.tabs.Tab | null = null;
   try {
     tab = await chrome.tabs.get(id);
@@ -37,12 +55,18 @@ async function extractTab(
 
     const tabUrl = tab.url;
 
+    // Check for cancellation before expensive operations
+    if (signal?.aborted) {
+      return { result: null, error: null };
+    }
+
     if (isYouTubeUrl(tabUrl)) {
       try {
         const { title, text } = await fetchYoutubeSubtitles(tabUrl, {
           onRetry: (attempt, err) => {
             console.warn(`Retry ${attempt} for ${tabUrl}:`, err.message);
           },
+          signal,
         });
         return {
           result: {
@@ -55,6 +79,10 @@ async function extractTab(
           error: null,
         };
       } catch (err) {
+        // Check if error was due to abort
+        if (signal?.aborted) {
+          return { result: null, error: null };
+        }
         const errorInfo = createExtractionError(id, tab, err);
         console.error(`Failed to extract YouTube subtitles for tab ${id}:`, err);
         return { result: null, error: errorInfo };
@@ -75,6 +103,11 @@ async function extractTab(
       };
     }
 
+    // Check for cancellation before script injection
+    if (signal?.aborted) {
+      return { result: null, error: null };
+    }
+
     const injection = await chrome.scripting.executeScript({
       target: { tabId: id },
       func: getPageHTML,
@@ -87,7 +120,10 @@ async function extractTab(
       return { result: null, error: null };
     }
 
-    await setCachedContent(id, { text: result.text, title: result.title, url: result.url });
+    // Skip cache write if aborted
+    if (!signal?.aborted) {
+      await setCachedContent(id, { text: result.text, title: result.title, url: result.url });
+    }
 
     return {
       result: {
@@ -100,6 +136,10 @@ async function extractTab(
       error: null,
     };
   } catch (err) {
+    // Check if error was due to abort
+    if (signal?.aborted) {
+      return { result: null, error: null };
+    }
     const errorInfo = createExtractionError(id, tab, err);
     console.error(`Failed to extract tab ${id}:`, err);
     return { result: null, error: errorInfo };
@@ -125,45 +165,135 @@ function createExtractionError(id: number, tab: chrome.tabs.Tab | null, err: unk
   };
 }
 
-// Helper to extract tabs with timeout and partial results preservation
-async function extractTabsWithTimeout(
+// Helper to extract tabs concurrently with progress tracking
+function extractTabsConcurrent(
   tabIds: number[],
-  timeoutMs: number
-): Promise<{ results: ExtractedData[]; errors: ExtractionErrorInfo[]; timedOut: boolean }> {
-  const startTime = Date.now();
-  const results: ExtractedData[] = [];
-  const errors: ExtractionErrorInfo[] = [];
-  const pendingExtractions = new Map<number, Promise<{ result: ExtractedData | null; error: ExtractionErrorInfo | null }>>();
+  signal: AbortSignal | undefined,
+  onProgress?: (update: {
+    completed: number;
+    failed: number;
+    total: number;
+    currentTab: { id: number; title: string } | null;
+  }) => void
+): Promise<{ results: ExtractedData[]; errors: ExtractionErrorInfo[]; cancelled: boolean }> {
 
-  // Start all extractions
-  for (const id of tabIds) {
-    pendingExtractions.set(id, extractTab(id));
-  }
+  const CONCURRENCY_LIMIT = 3;
+  const SINGLE_TAB_TIMEOUT = 8000;
 
-  // Wait for results with timeout
-  while (pendingExtractions.size > 0 && Date.now() - startTime < timeoutMs) {
-    const remainingTime = timeoutMs - (Date.now() - startTime);
-    if (remainingTime <= 0) break;
+  return new Promise((resolve) => {
+    const results: ExtractedData[] = [];
+    const errors: ExtractionErrorInfo[] = [];
+    let completed = 0;
+    let failed = 0;
+    let cancelled = false;
 
-    // Race between the next extraction and the timeout
-    try {
-      const [nextId, nextPromise] = Array.from(pendingExtractions.entries())[0];
-      const { result, error } = await withTimeout(nextPromise, remainingTime);
+    const queue = [...tabIds];
+    const active = new Set<number>();
 
-      if (error) {
-        errors.push(error);
-      } else if (result) {
-        results.push(result);
+    const processNext = async (): Promise<void> => {
+      if (signal?.aborted) {
+        cancelled = true;
+        checkDone();
+        return;
       }
-      pendingExtractions.delete(nextId);
-    } catch {
-      // Timeout occurred for this specific extraction
-      break;
-    }
-  }
 
-  const timedOut = pendingExtractions.size > 0;
-  return { results, errors, timedOut };
+      const tabId = queue.shift();
+      if (tabId === undefined) {
+        checkDone();
+        return;
+      }
+
+      active.add(tabId);
+
+      let currentTabTitle = 'Untitled';
+      let currentTabUrl = 'unknown';
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        currentTabTitle = tab.title || 'Untitled';
+        currentTabUrl = tab.url || 'unknown';
+      } catch {
+        // Tab might be closed
+      }
+
+      // Report progress with actual tab title
+      onProgress?.({
+        completed,
+        failed,
+        total: tabIds.length,
+        currentTab: { id: tabId, title: currentTabTitle }
+      });
+
+      try {
+        // Create combined signal for timeout + user cancellation
+        const timeoutSignal = AbortSignal.timeout(SINGLE_TAB_TIMEOUT);
+        const combinedSignal = signal
+          ? AbortSignal.any([signal, timeoutSignal])
+          : timeoutSignal;
+
+        const { result, error } = await extractTab(tabId, combinedSignal);
+
+        // Check if extraction timed out or was cancelled
+        if (!result && !error) {
+          if (timeoutSignal.aborted) {
+            errors.push({
+              tabId,
+              url: currentTabUrl,
+              title: currentTabTitle,
+              errorCode: 'TIMEOUT',
+              userMessage: 'Extraction timed out after 8 seconds'
+            });
+            failed++;
+          }
+          // If user cancelled, don't add error - just stop processing
+        } else if (error) {
+          errors.push(error);
+          failed++;
+        } else if (result) {
+          results.push(result);
+          completed++;
+        }
+
+        onProgress?.({
+          completed,
+          failed,
+          total: tabIds.length,
+          currentTab: null
+        });
+
+      } catch (err) {
+        errors.push({
+          tabId,
+          url: 'unknown',
+          title: currentTabTitle,
+          errorCode: 'NETWORK_ERROR',
+          userMessage: err instanceof Error ? err.message : 'Unknown error'
+        });
+        failed++;
+      } finally {
+        active.delete(tabId);
+        if (queue.length > 0 && !signal?.aborted) {
+          await processNext();
+        } else {
+          checkDone();
+        }
+      }
+    };
+
+    let workersDone = 0;
+    // checkDone() is called when a worker's queue chain ends.
+    // Each worker calls checkDone() exactly once when it has no more tabs to process.
+    // When workersDone equals the number of initial workers, all tabs are done.
+    const checkDone = () => {
+      workersDone++;
+      if (workersDone >= Math.min(CONCURRENCY_LIMIT, tabIds.length)) {
+        resolve({ results, errors, cancelled });
+      }
+    };
+
+    for (let i = 0; i < Math.min(CONCURRENCY_LIMIT, tabIds.length); i++) {
+      processNext();
+    }
+  });
 }
 
 export function SidePanelApp() {
@@ -201,6 +331,19 @@ export function SidePanelApp() {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(false);
   const [lastExtractedData, setLastExtractedData] = useState<ExtractedData[]>([]);
+
+  // Progress tracking state
+  const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const [toRightAbortController, setToRightAbortController] = useState<AbortController | null>(null);
+  const [toRightExtractionProgress, setToRightExtractionProgress] = useState<ExtractionProgress | null>(null);
+  const [highlightedAbortController, setHighlightedAbortController] = useState<AbortController | null>(null);
+  const [highlightedExtractionProgress, setHighlightedExtractionProgress] = useState<ExtractionProgress | null>(null);
+
+  // Auto-hide progress bars after cancellation
+  useAutoHideProgress(extractionProgress, setExtractionProgress);
+  useAutoHideProgress(toRightExtractionProgress, setToRightExtractionProgress);
+  useAutoHideProgress(highlightedExtractionProgress, setHighlightedExtractionProgress);
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -240,47 +383,68 @@ export function SidePanelApp() {
     const selectedIds = getSelectedIdsAsArray();
     if (selectedIds.length === 0) return;
 
+    // Create abort controller for this extraction
+    const controller = new AbortController();
+    setAbortController(controller);
+
     setIsExtracting(true);
     setExtractionStatus('extracting');
     setExtractionErrors([]);
-    toast.loading('Extracting content...', { id: 'extract-status' });
+
+    // Initialize progress state
+    setExtractionProgress({
+      total: selectedIds.length,
+      completed: 0,
+      failed: 0,
+      currentTabId: null,
+      currentTabTitle: null,
+      startTime: Date.now(),
+      isCancelled: false
+    });
 
     try {
-      const { results, errors, timedOut } = await extractTabsWithTimeout(selectedIds, EXTRACTION_TIMEOUT_MS);
+      const { results, errors, cancelled } = await extractTabsConcurrent(
+        selectedIds,
+        controller.signal,
+        (update) => {
+          setExtractionProgress(prev => prev ? {
+            ...prev,
+            completed: update.completed,
+            failed: update.failed,
+            currentTabId: update.currentTab?.id ?? null,
+            currentTabTitle: update.currentTab?.title ?? null,
+          } : null);
+        }
+      );
 
       setExtractionErrors(errors);
-
       const validResults = results;
-      const jsonString = JSON.stringify(validResults, null, 2);
-      await navigator.clipboard.writeText(jsonString);
 
-      // Save to history
+      // Always copy valid results to clipboard, even if cancelled
       if (validResults.length > 0) {
-        await history.addEntry(validResults, 'json', 'clipboard');
-        setLastExtractedData(validResults);
+        const jsonString = JSON.stringify(validResults, null, 2);
+        await navigator.clipboard.writeText(jsonString);
 
-        // Close tabs if setting is enabled
-        if (closeTabsEnabled) {
-          const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
-          // Update selection state after closing
-          if (closed > 0) {
-            clearSelection();
+        // Only save to history and close tabs if not cancelled
+        if (!cancelled) {
+          await history.addEntry(validResults, 'json', 'clipboard');
+          setLastExtractedData(validResults);
+
+          // Close tabs if setting is enabled
+          if (closeTabsEnabled) {
+            const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
+            if (closed > 0) {
+              clearSelection();
+            }
           }
         }
       }
 
-      toast.dismiss('extract-status');
-
-      if (timedOut) {
-        setExtractionStatus(validResults.length > 0 ? 'partial' : 'error');
-        if (validResults.length > 0) {
-          toast(`Extraction timed out after 10s. Extracted ${validResults.length} of ${selectedIds.length} tabs.`, {
-            icon: '⚠️',
-            duration: 5000,
-          });
-        } else {
-          toast.error('Extraction timed out. Some tabs may be unresponsive.');
-        }
+      if (cancelled) {
+        setExtractionStatus('idle');
+        toast.success(`Cancelled. ${validResults.length} tab${validResults.length === 1 ? '' : 's'} copied to clipboard.`, {
+          icon: '⚠️',
+        });
       } else if (errors.length > 0 && validResults.length === 0) {
         setExtractionStatus('error');
         toast.error(`Extraction failed for all ${selectedIds.length} tab${selectedIds.length > 1 ? 's' : ''}`);
@@ -302,8 +466,25 @@ export function SidePanelApp() {
       toast.error('Content extraction failed. Please try again.');
     } finally {
       setIsExtracting(false);
+      setExtractionProgress(null);
+      setAbortController(null);
     }
   }, [getSelectedIdsAsArray, history, closeTabsEnabled, clearSelection]);
+
+  const handleCancelExtraction = useCallback(() => {
+    abortController?.abort();
+    setExtractionProgress(prev => prev ? { ...prev, isCancelled: true } : null);
+  }, [abortController]);
+
+  const handleCancelToRightExtraction = useCallback(() => {
+    toRightAbortController?.abort();
+    setToRightExtractionProgress(prev => prev ? { ...prev, isCancelled: true } : null);
+  }, [toRightAbortController]);
+
+  const handleCancelHighlightedExtraction = useCallback(() => {
+    highlightedAbortController?.abort();
+    setHighlightedExtractionProgress(prev => prev ? { ...prev, isCancelled: true } : null);
+  }, [highlightedAbortController]);
 
   const handleExtractToRight = useCallback(async () => {
     const tabsToRight = await getTabsToRight();
@@ -311,47 +492,68 @@ export function SidePanelApp() {
 
     if (tabIds.length === 0) return;
 
+    // Create abort controller for this extraction
+    const controller = new AbortController();
+    setToRightAbortController(controller);
+
     setIsExtractingToRight(true);
     setToRightExtractionStatus('extracting');
     setToRightExtractionErrors([]);
-    toast.loading('Extracting content from tabs to the right...', { id: 'extract-to-right-status' });
+
+    // Initialize progress state
+    setToRightExtractionProgress({
+      total: tabIds.length,
+      completed: 0,
+      failed: 0,
+      currentTabId: null,
+      currentTabTitle: null,
+      startTime: Date.now(),
+      isCancelled: false
+    });
 
     try {
-      const { results, errors, timedOut } = await extractTabsWithTimeout(tabIds, EXTRACTION_TIMEOUT_MS);
+      const { results, errors, cancelled } = await extractTabsConcurrent(
+        tabIds,
+        controller.signal,
+        (update) => {
+          setToRightExtractionProgress(prev => prev ? {
+            ...prev,
+            completed: update.completed,
+            failed: update.failed,
+            currentTabId: update.currentTab?.id ?? null,
+            currentTabTitle: update.currentTab?.title ?? null,
+          } : null);
+        }
+      );
 
       setToRightExtractionErrors(errors);
-
       const validResults = results;
-      const jsonString = JSON.stringify(validResults, null, 2);
-      await navigator.clipboard.writeText(jsonString);
 
-      // Save to history
+      // Always copy valid results to clipboard, even if cancelled
       if (validResults.length > 0) {
-        await history.addEntry(validResults, 'json', 'clipboard');
-        setLastExtractedData(validResults);
+        const jsonString = JSON.stringify(validResults, null, 2);
+        await navigator.clipboard.writeText(jsonString);
 
-        // Close tabs if setting is enabled
-        if (closeTabsEnabled) {
-          const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
-          // Update selection state after closing
-          if (closed > 0) {
-            clearSelection();
+        // Only save to history and close tabs if not cancelled
+        if (!cancelled) {
+          await history.addEntry(validResults, 'json', 'clipboard');
+          setLastExtractedData(validResults);
+
+          // Close tabs if setting is enabled
+          if (closeTabsEnabled) {
+            const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
+            if (closed > 0) {
+              clearSelection();
+            }
           }
         }
       }
 
-      toast.dismiss('extract-to-right-status');
-
-      if (timedOut) {
-        setToRightExtractionStatus(validResults.length > 0 ? 'partial' : 'error');
-        if (validResults.length > 0) {
-          toast(`Extraction timed out after 10s. Extracted ${validResults.length} of ${tabIds.length} tabs.`, {
-            icon: '⚠️',
-            duration: 5000,
-          });
-        } else {
-          toast.error('Extraction timed out. Some tabs may be unresponsive.');
-        }
+      if (cancelled) {
+        setToRightExtractionStatus('idle');
+        toast.success(`Cancelled. ${validResults.length} tab${validResults.length === 1 ? '' : 's'} copied to clipboard.`, {
+          icon: '⚠️',
+        });
       } else if (errors.length > 0 && validResults.length === 0) {
         setToRightExtractionStatus('error');
         toast.error(`Extraction failed for all ${tabIds.length} tab${tabIds.length > 1 ? 's' : ''}`);
@@ -373,6 +575,8 @@ export function SidePanelApp() {
       toast.error('Content extraction failed. Please try again.');
     } finally {
       setIsExtractingToRight(false);
+      setToRightExtractionProgress(null);
+      setToRightAbortController(null);
     }
   }, [history, closeTabsEnabled, clearSelection]);
 
@@ -381,47 +585,68 @@ export function SidePanelApp() {
 
     if (tabIds.length === 0) return;
 
+    // Create abort controller for this extraction
+    const controller = new AbortController();
+    setHighlightedAbortController(controller);
+
     setIsExtractingHighlighted(true);
     setHighlightedExtractionStatus('extracting');
     setHighlightedExtractionErrors([]);
-    toast.loading('Extracting content from highlighted tabs...', { id: 'extract-highlighted-status' });
+
+    // Initialize progress state
+    setHighlightedExtractionProgress({
+      total: tabIds.length,
+      completed: 0,
+      failed: 0,
+      currentTabId: null,
+      currentTabTitle: null,
+      startTime: Date.now(),
+      isCancelled: false
+    });
 
     try {
-      const { results, errors, timedOut } = await extractTabsWithTimeout(tabIds, EXTRACTION_TIMEOUT_MS);
+      const { results, errors, cancelled } = await extractTabsConcurrent(
+        tabIds,
+        controller.signal,
+        (update) => {
+          setHighlightedExtractionProgress(prev => prev ? {
+            ...prev,
+            completed: update.completed,
+            failed: update.failed,
+            currentTabId: update.currentTab?.id ?? null,
+            currentTabTitle: update.currentTab?.title ?? null,
+          } : null);
+        }
+      );
 
       setHighlightedExtractionErrors(errors);
-
       const validResults = results;
-      const jsonString = JSON.stringify(validResults, null, 2);
-      await navigator.clipboard.writeText(jsonString);
 
-      // Save to history
+      // Always copy valid results to clipboard, even if cancelled
       if (validResults.length > 0) {
-        await history.addEntry(validResults, 'json', 'clipboard');
-        setLastExtractedData(validResults);
+        const jsonString = JSON.stringify(validResults, null, 2);
+        await navigator.clipboard.writeText(jsonString);
 
-        // Close tabs if setting is enabled
-        if (closeTabsEnabled) {
-          const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
-          // Update selection state after closing
-          if (closed > 0) {
-            clearSelection();
+        // Only save to history and close tabs if not cancelled
+        if (!cancelled) {
+          await history.addEntry(validResults, 'json', 'clipboard');
+          setLastExtractedData(validResults);
+
+          // Close tabs if setting is enabled
+          if (closeTabsEnabled) {
+            const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
+            if (closed > 0) {
+              clearSelection();
+            }
           }
         }
       }
 
-      toast.dismiss('extract-highlighted-status');
-
-      if (timedOut) {
-        setHighlightedExtractionStatus(validResults.length > 0 ? 'partial' : 'error');
-        if (validResults.length > 0) {
-          toast(`Extraction timed out after 10s. Extracted ${validResults.length} of ${tabIds.length} tabs.`, {
-            icon: '⚠️',
-            duration: 5000,
-          });
-        } else {
-          toast.error('Extraction timed out. Some tabs may be unresponsive.');
-        }
+      if (cancelled) {
+        setHighlightedExtractionStatus('idle');
+        toast.success(`Cancelled. ${validResults.length} tab${validResults.length === 1 ? '' : 's'} copied to clipboard.`, {
+          icon: '⚠️',
+        });
       } else if (errors.length > 0 && validResults.length === 0) {
         setHighlightedExtractionStatus('error');
         toast.error(`Extraction failed for all ${tabIds.length} tab${tabIds.length > 1 ? 's' : ''}`);
@@ -443,6 +668,8 @@ export function SidePanelApp() {
       toast.error('Content extraction failed. Please try again.');
     } finally {
       setIsExtractingHighlighted(false);
+      setHighlightedExtractionProgress(null);
+      setHighlightedAbortController(null);
     }
   }, [highlightedTabs, history, closeTabsEnabled, clearSelection]);
 
@@ -520,8 +747,34 @@ export function SidePanelApp() {
 
   return (
     <div className="h-screen w-full flex flex-col text-glass-primary">
+      {/* Progress Bars - show all active extractions */}
+      {extractionProgress && (
+        <div className="sticky top-0 z-20 px-4 pt-4">
+          <ExtractionProgressComponent
+            progress={extractionProgress}
+            onCancel={handleCancelExtraction}
+          />
+        </div>
+      )}
+      {toRightExtractionProgress && (
+        <div className="sticky top-0 z-20 px-4 pt-4">
+          <ExtractionProgressComponent
+            progress={toRightExtractionProgress}
+            onCancel={handleCancelToRightExtraction}
+          />
+        </div>
+      )}
+      {highlightedExtractionProgress && (
+        <div className="sticky top-0 z-20 px-4 pt-4">
+          <ExtractionProgressComponent
+            progress={highlightedExtractionProgress}
+            onCancel={handleCancelHighlightedExtraction}
+          />
+        </div>
+      )}
+
       {/* Error Alert */}
-      {extractionErrors.length > 0 && (
+      {extractionErrors.length > 0 && !extractionProgress && (
         <ExtractionErrorAlert
           errors={extractionErrors}
           onDismiss={() => {
