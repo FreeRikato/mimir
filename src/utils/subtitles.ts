@@ -78,16 +78,23 @@ function createTimeoutController(timeoutMs: number): AbortController {
   return controller;
 }
 
-async function fetchWithTimeout(url: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+async function fetchWithTimeout(url: string, timeoutMs = REQUEST_TIMEOUT_MS, externalSignal?: AbortSignal): Promise<Response> {
   const controller = createTimeoutController(timeoutMs);
 
+  // Combine timeout signal with external abort signal if provided
+  const signal = externalSignal
+    ? AbortSignal.any([controller.signal, externalSignal])
+    : controller.signal;
+
   try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-    });
+    const response = await fetch(url, { signal });
     return response;
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
+      // Check if it was external cancellation or timeout
+      if (externalSignal?.aborted) {
+        throw new SubtitleError('Operation cancelled', 'NETWORK_ERROR', undefined, url);
+      }
       throw new SubtitleError(
         `Request timed out after ${timeoutMs}ms`,
         'TIMEOUT',
@@ -124,11 +131,17 @@ function isRetryableError(error: SubtitleError): boolean {
 async function fetchWithRetry<T>(
   fetchFn: () => Promise<T>,
   maxAttempts = RETRY_MAX_ATTEMPTS,
-  onRetry?: (attempt: number, error: SubtitleError) => void
+  onRetry?: (attempt: number, error: SubtitleError) => void,
+  signal?: AbortSignal
 ): Promise<T> {
   let lastError: SubtitleError | undefined;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // Check for cancellation before each attempt
+    if (signal?.aborted) {
+      throw new SubtitleError('Operation cancelled', 'NETWORK_ERROR', undefined);
+    }
+
     try {
       return await fetchFn();
     } catch (err) {
@@ -146,7 +159,15 @@ async function fetchWithRetry<T>(
 
       const delay = getRetryDelay(attempt);
       onRetry?.(attempt + 1, subtitleError);
-      await new Promise(resolve => setTimeout(resolve, delay));
+
+      // Wait for delay with signal checking
+      await new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(resolve, delay);
+        signal?.addEventListener('abort', () => {
+          clearTimeout(timeoutId);
+          reject(new SubtitleError('Operation cancelled', 'NETWORK_ERROR', undefined));
+        }, { once: true });
+      });
     }
   }
 
@@ -178,9 +199,10 @@ export async function fetchYoutubeSubtitles(
     timeoutMs?: number;
     maxRetries?: number;
     onRetry?: (attempt: number, error: SubtitleError) => void;
+    signal?: AbortSignal;
   } = {}
 ): Promise<{ title: string; text: string }> {
-  const { timeoutMs = REQUEST_TIMEOUT_MS, maxRetries = RETRY_MAX_ATTEMPTS, onRetry } = options;
+  const { timeoutMs = REQUEST_TIMEOUT_MS, maxRetries = RETRY_MAX_ATTEMPTS, onRetry, signal } = options;
 
   if (!isYouTubeUrl(youtubeUrl)) {
     throw new SubtitleError('Invalid YouTube URL', 'INVALID_URL', undefined, youtubeUrl);
@@ -197,7 +219,7 @@ export async function fetchYoutubeSubtitles(
     async () => {
       const normalizedUrl = normalizeYouTubeUrl(youtubeUrl);
       const apiUrl = getSubtitlesApiUrl(normalizedUrl);
-      const response = await fetchWithTimeout(apiUrl, timeoutMs);
+      const response = await fetchWithTimeout(apiUrl, timeoutMs, signal);
 
       if (!response.ok) {
         if (response.status >= 500) {
@@ -255,6 +277,7 @@ export async function fetchYoutubeSubtitles(
       return result;
     },
     maxRetries,
-    onRetry
+    onRetry,
+    signal
   );
 }
