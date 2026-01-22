@@ -4,15 +4,19 @@ import toast from 'react-hot-toast';
 import { useTabs } from './hooks/useTabs';
 import { useSelection } from './hooks/useSelection';
 import { useHighlightedTabs } from './hooks/useHighlightedTabs';
+import { useHistory } from './hooks/useHistory';
 import { DomainGroup } from './components/DomainGroup';
 import { Footer } from './components/Footer';
 import { ExtractionErrorAlert } from './components/ExtractionErrorAlert';
+import { ExportModal } from './components/ExportModal';
+import { HistoryPanel } from './components/HistoryPanel';
 import { getPageHTML } from './utils/scripting';
 import { isYouTubeUrl } from './utils/youtube';
 import { fetchYoutubeSubtitles } from './utils/subtitles';
 import { getCachedContent, setCachedContent } from './utils/cache';
 import { getTabsToRight } from './utils/tabHelpers';
-import type { ExtractedData, ExtractionResult, ExtractionErrorInfo, ExtractionStatus } from './types';
+import { formatExport, generateFilename, getMimeType, downloadAsFile } from './utils/exporters';
+import type { ExtractedData, ExtractionResult, ExtractionErrorInfo, ExtractionStatus, ExportFormat } from './types';
 import { SubtitleError } from './types';
 
 export function SidePanelApp() {
@@ -27,6 +31,7 @@ export function SidePanelApp() {
     clearSelection,
   } = useSelection();
   const { highlightedCount, highlightedTabs } = useHighlightedTabs();
+  const history = useHistory();
 
   const [isExtracting, setIsExtracting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -43,6 +48,11 @@ export function SidePanelApp() {
   const [isExtractingHighlighted, setIsExtractingHighlighted] = useState(false);
   const [highlightedExtractionStatus, setHighlightedExtractionStatus] = useState<ExtractionStatus>('idle');
   const [highlightedExtractionErrors, setHighlightedExtractionErrors] = useState<ExtractionErrorInfo[]>([]);
+
+  // Export & History state
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(false);
+  const [lastExtractedData, setLastExtractedData] = useState<ExtractedData[]>([]);
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -171,6 +181,12 @@ export function SidePanelApp() {
       const jsonString = JSON.stringify(validResults, null, 2);
       await navigator.clipboard.writeText(jsonString);
 
+      // Save to history
+      if (validResults.length > 0) {
+        await history.addEntry(validResults, 'json', 'clipboard');
+        setLastExtractedData(validResults);
+      }
+
       toast.dismiss('extract-status');
 
       if (errors.length > 0 && validResults.length === 0) {
@@ -195,7 +211,7 @@ export function SidePanelApp() {
     } finally {
       setIsExtracting(false);
     }
-  }, [getSelectedIdsAsArray]);
+  }, [getSelectedIdsAsArray, history]);
 
   const handleExtractToRight = useCallback(async () => {
     const tabsToRight = await getTabsToRight();
@@ -296,6 +312,12 @@ export function SidePanelApp() {
       const jsonString = JSON.stringify(validResults, null, 2);
       await navigator.clipboard.writeText(jsonString);
 
+      // Save to history
+      if (validResults.length > 0) {
+        await history.addEntry(validResults, 'json', 'clipboard');
+        setLastExtractedData(validResults);
+      }
+
       toast.dismiss('extract-to-right-status');
 
       if (errors.length > 0 && validResults.length === 0) {
@@ -320,7 +342,7 @@ export function SidePanelApp() {
     } finally {
       setIsExtractingToRight(false);
     }
-  }, []);
+  }, [history]);
 
   const handleExtractHighlighted = useCallback(async () => {
     const tabIds = highlightedTabs.map((t) => t.id);
@@ -420,6 +442,12 @@ export function SidePanelApp() {
       const jsonString = JSON.stringify(validResults, null, 2);
       await navigator.clipboard.writeText(jsonString);
 
+      // Save to history
+      if (validResults.length > 0) {
+        await history.addEntry(validResults, 'json', 'clipboard');
+        setLastExtractedData(validResults);
+      }
+
       toast.dismiss('extract-highlighted-status');
 
       if (errors.length > 0 && validResults.length === 0) {
@@ -444,7 +472,68 @@ export function SidePanelApp() {
     } finally {
       setIsExtractingHighlighted(false);
     }
-  }, [highlightedTabs]);
+  }, [highlightedTabs, history]);
+
+  // Export & History handlers
+  const handleOpenExportModal = useCallback(() => {
+    setIsExportModalOpen(true);
+  }, []);
+
+  const handleCloseExportModal = useCallback(() => {
+    setIsExportModalOpen(false);
+  }, []);
+
+  const handleExportFromModal = useCallback(async (
+    data: ExtractedData[],
+    format: ExportFormat,
+    action: 'clipboard' | 'file',
+    filename?: string
+  ) => {
+    try {
+      const formatted = formatExport(data, format);
+
+      if (action === 'clipboard') {
+        await navigator.clipboard.writeText(formatted);
+        toast.success(`Exported as ${format.toUpperCase()} and copied to clipboard`);
+      } else {
+        const mimeType = getMimeType(format);
+        const finalFilename = filename || generateFilename(format);
+        downloadAsFile(formatted, finalFilename, mimeType);
+        toast.success(`Downloaded as ${finalFilename}`);
+      }
+
+      // Save to history
+      await history.addEntry(data, format, action, filename);
+    } catch (err) {
+      console.error('Export failed:', err);
+      toast.error('Export failed. Please try again.');
+    }
+  }, [history]);
+
+  const handleOpenHistory = useCallback(() => {
+    setIsHistoryPanelOpen(true);
+  }, []);
+
+  const handleCloseHistory = useCallback(() => {
+    setIsHistoryPanelOpen(false);
+  }, []);
+
+  const handleReExport = useCallback(async (
+    data: ExtractedData[],
+    format: ExportFormat,
+    filename?: string
+  ) => {
+    try {
+      const formatted = formatExport(data, format);
+      const finalFilename = filename || generateFilename(format);
+      const mimeType = getMimeType(format);
+      downloadAsFile(formatted, finalFilename, mimeType);
+      toast.success(`Downloaded as ${finalFilename}`);
+    } catch (err) {
+      console.error('Re-export failed:', err);
+      toast.error('Re-export failed. Please try again.');
+    }
+  }, []);
 
   function createExtractionError(id: number, tab: chrome.tabs.Tab | null, err: unknown): ExtractionErrorInfo {
     let code: SubtitleError['code'] = 'NETWORK_ERROR';
@@ -530,6 +619,34 @@ export function SidePanelApp() {
         isExtractingHighlighted={isExtractingHighlighted}
         highlightedExtractionStatus={highlightedExtractionStatus}
         highlightedExtractionErrors={highlightedExtractionErrors}
+        historyCount={history.count}
+        onOpenHistory={handleOpenHistory}
+        onOpenExportModal={handleOpenExportModal}
+      />
+
+      {/* Export Modal */}
+      <ExportModal
+        isOpen={isExportModalOpen}
+        onClose={handleCloseExportModal}
+        data={lastExtractedData.length > 0 ? lastExtractedData : []}
+        onExportComplete={handleExportFromModal}
+      />
+
+      {/* History Panel */}
+      <HistoryPanel
+        isOpen={isHistoryPanelOpen}
+        onClose={handleCloseHistory}
+        entries={history.entries}
+        count={history.count}
+        isLoading={history.isLoading}
+        error={history.error}
+        hasMore={history.hasMore}
+        onLoadMore={history.loadMore}
+        onDelete={history.deleteEntry}
+        onClearAll={history.clearAll}
+        onSearch={history.search}
+        onClearSearch={history.clearSearch}
+        onReExport={handleReExport}
       />
     </div>
   );
