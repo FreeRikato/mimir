@@ -117,3 +117,25 @@ export interface SearchFilters {
   dateRange: { start: Date | null; end: Date | null };
   domains: string[];
 }
+
+export interface ExtractionProgress {
+  total: number;
+  completed: number;
+  failed: number;
+  currentTabId: number | null;
+  currentTabTitle: string | null;
+  startTime: number;
+  isCancelled: boolean;
+}
+
+export interface ProgressUpdate {
+  completed: number;
+  failed: number;
+  total: number;
+  currentTab: {
+    id: number;
+    title: string;
+  } | null;
+}
+
+export type ProgressCallback = (progress: ProgressUpdate) => void;
