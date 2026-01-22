@@ -5,6 +5,7 @@ import { useTabs } from './hooks/useTabs';
 import { useSelection } from './hooks/useSelection';
 import { useHighlightedTabs } from './hooks/useHighlightedTabs';
 import { useHistory } from './hooks/useHistory';
+import { useCloseTabsSetting } from './hooks/useCloseTabsSetting';
 import { DomainGroup } from './components/DomainGroup';
 import { Footer } from './components/Footer';
 import { ExtractionErrorAlert } from './components/ExtractionErrorAlert';
@@ -14,7 +15,7 @@ import { getPageHTML } from './utils/scripting';
 import { isYouTubeUrl } from './utils/youtube';
 import { fetchYoutubeSubtitles } from './utils/subtitles';
 import { getCachedContent, setCachedContent } from './utils/cache';
-import { getTabsToRight } from './utils/tabHelpers';
+import { getTabsToRight, closeTabsSafely } from './utils/tabHelpers';
 import { formatExport, generateFilename, getMimeType, downloadAsFile } from './utils/exporters';
 import { withTimeout } from './utils/asyncHelpers';
 import type { ExtractedData, ExtractionResult, ExtractionErrorInfo, ExtractionStatus, ExportFormat } from './types';
@@ -178,6 +179,7 @@ export function SidePanelApp() {
   } = useSelection();
   const { highlightedCount, highlightedTabs } = useHighlightedTabs();
   const history = useHistory();
+  const { closeTabsEnabled, toggleCloseTabs } = useCloseTabsSetting();
 
   const [isExtracting, setIsExtracting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -256,6 +258,15 @@ export function SidePanelApp() {
       if (validResults.length > 0) {
         await history.addEntry(validResults, 'json', 'clipboard');
         setLastExtractedData(validResults);
+
+        // Close tabs if setting is enabled
+        if (closeTabsEnabled) {
+          const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
+          // Update selection state after closing
+          if (closed > 0) {
+            clearSelection();
+          }
+        }
       }
 
       toast.dismiss('extract-status');
@@ -292,7 +303,7 @@ export function SidePanelApp() {
     } finally {
       setIsExtracting(false);
     }
-  }, [getSelectedIdsAsArray, history]);
+  }, [getSelectedIdsAsArray, history, closeTabsEnabled, clearSelection]);
 
   const handleExtractToRight = useCallback(async () => {
     const tabsToRight = await getTabsToRight();
@@ -318,6 +329,15 @@ export function SidePanelApp() {
       if (validResults.length > 0) {
         await history.addEntry(validResults, 'json', 'clipboard');
         setLastExtractedData(validResults);
+
+        // Close tabs if setting is enabled
+        if (closeTabsEnabled) {
+          const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
+          // Update selection state after closing
+          if (closed > 0) {
+            clearSelection();
+          }
+        }
       }
 
       toast.dismiss('extract-to-right-status');
@@ -354,7 +374,7 @@ export function SidePanelApp() {
     } finally {
       setIsExtractingToRight(false);
     }
-  }, [history]);
+  }, [history, closeTabsEnabled, clearSelection]);
 
   const handleExtractHighlighted = useCallback(async () => {
     const tabIds = highlightedTabs.map((t) => t.id);
@@ -379,6 +399,15 @@ export function SidePanelApp() {
       if (validResults.length > 0) {
         await history.addEntry(validResults, 'json', 'clipboard');
         setLastExtractedData(validResults);
+
+        // Close tabs if setting is enabled
+        if (closeTabsEnabled) {
+          const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
+          // Update selection state after closing
+          if (closed > 0) {
+            clearSelection();
+          }
+        }
       }
 
       toast.dismiss('extract-highlighted-status');
@@ -415,7 +444,7 @@ export function SidePanelApp() {
     } finally {
       setIsExtractingHighlighted(false);
     }
-  }, [highlightedTabs, history]);
+  }, [highlightedTabs, history, closeTabsEnabled, clearSelection]);
 
   // Export & History handlers
   const handleOpenExportModal = useCallback(() => {
@@ -546,6 +575,8 @@ export function SidePanelApp() {
         highlightedExtractionErrors={highlightedExtractionErrors}
         onOpenHistory={handleOpenHistory}
         onOpenExportModal={handleOpenExportModal}
+        closeTabsEnabled={closeTabsEnabled}
+        onToggleCloseTabs={toggleCloseTabs}
       />
 
       {/* Export Modal */}

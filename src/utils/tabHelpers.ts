@@ -97,3 +97,53 @@ export async function getHighlightedTabsCount(): Promise<number> {
   const tabs = await getHighlightedTabs();
   return tabs.length;
 }
+
+/**
+ * Result of closing tabs operation
+ */
+export interface CloseTabsResult {
+  closed: number;
+  failed: number;
+  activeProtected: boolean;
+}
+
+/**
+ * Closes tabs safely while protecting the active tab.
+ * Filters out the active tab from the list before closing.
+ * Re-queries the active tab immediately before closing to minimize race conditions.
+ * Returns statistics about the operation.
+ */
+export async function closeTabsSafely(tabIds: number[]): Promise<CloseTabsResult> {
+  if (tabIds.length === 0) {
+    return { closed: 0, failed: 0, activeProtected: false };
+  }
+
+  try {
+    // Re-query active tab immediately before closing to minimize race condition
+    // (user could switch tabs between the call to this function and the close operation)
+    const [activeTab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+
+    const activeTabId = activeTab?.id;
+    const tabsToClose = activeTabId
+      ? tabIds.filter((id) => id !== activeTabId)
+      : tabIds;
+
+    if (tabsToClose.length === 0) {
+      return { closed: 0, failed: 0, activeProtected: true };
+    }
+
+    await chrome.tabs.remove(tabsToClose);
+
+    return {
+      closed: tabsToClose.length,
+      failed: 0,
+      activeProtected: activeTabId !== undefined && tabIds.includes(activeTabId),
+    };
+  } catch (err) {
+    console.error('Failed to close tabs:', err);
+    return { closed: 0, failed: tabIds.length, activeProtected: false };
+  }
+}
