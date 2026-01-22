@@ -1,4 +1,4 @@
-import { RefreshCw, X, Copy, CheckCircle, Loader2, AlertTriangle, AlertCircle, ArrowRight } from 'lucide-react';
+import { RefreshCw, X, Copy, CheckCircle, Loader2, AlertTriangle, AlertCircle, ArrowRight, Highlighter } from 'lucide-react';
 import type { ExtractionStatus, ExtractionErrorInfo } from '../types';
 
 interface FooterProps {
@@ -16,6 +16,12 @@ interface FooterProps {
   isExtractingToRight: boolean;
   toRightExtractionStatus: ExtractionStatus;
   toRightExtractionErrors: ExtractionErrorInfo[];
+  // Highlighted tabs props
+  highlightedCount: number;
+  onExtractHighlighted: () => void;
+  isExtractingHighlighted: boolean;
+  highlightedExtractionStatus: ExtractionStatus;
+  highlightedExtractionErrors: ExtractionErrorInfo[];
 }
 
 export function Footer({
@@ -23,7 +29,7 @@ export function Footer({
   isExtracting,
   isRefreshing,
   extractionStatus,
-  extractionErrors,
+  extractionErrors: _extractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
   onExtract,
   onRefresh,
   onCancel,
@@ -32,26 +38,43 @@ export function Footer({
   onExtractToRight,
   isExtractingToRight,
   toRightExtractionStatus,
-  // toRightExtractionErrors - not currently used but kept for future error display
-  toRightExtractionErrors: _toRightExtractionErrors,
+  toRightExtractionErrors: _toRightExtractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
+  // Highlighted tabs props
+  highlightedCount,
+  onExtractHighlighted,
+  isExtractingHighlighted,
+  highlightedExtractionStatus,
+  highlightedExtractionErrors: _highlightedExtractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
 }: FooterProps) {
-  const isExtractDisabled = selectedCount === 0 || isExtracting || isExtractingToRight;
-  const showCancel = selectedCount > 0 && !isExtracting && !isExtractingToRight;
-  const failedCount = extractionErrors.length;
-  const isExtractToRightDisabled = tabsToRightCount === 0 || isExtracting || isExtractingToRight;
+  const isExtractDisabled = selectedCount === 0 || isExtracting || isExtractingToRight || isExtractingHighlighted;
+  const showCancel = selectedCount > 0 && !isExtracting && !isExtractingToRight && !isExtractingHighlighted;
+  const isExtractToRightDisabled = tabsToRightCount === 0 || isExtracting || isExtractingToRight || isExtractingHighlighted;
+  const isExtractHighlightedDisabled = highlightedCount === 0 || isExtracting || isExtractingToRight || isExtractingHighlighted;
+
+  const getButtonClassName = (isDisabled: boolean, status: ExtractionStatus, colorVariant: 'orange' | 'purple' | 'teal') => `
+    flex-shrink-0 w-11 h-11 rounded-lg glass-hover glass-focus
+    flex items-center justify-center
+    transition-all duration-300 transform
+    ${isDisabled
+      ? 'glass-heavy text-glass-muted cursor-not-allowed'
+      : status === 'success'
+        ? `glass-${colorVariant} text-${colorVariant}-300 border border-${colorVariant}-500/30`
+        : status === 'partial'
+          ? 'glass-amber text-amber-300 border border-amber-500/30'
+          : status === 'error'
+            ? 'glass-red text-red-300 border border-red-500/30'
+            : 'glass-heavy text-white border border-white/10 hover:scale-[1.02]'
+    }
+  `;
 
   return (
     <div className="sticky bottom-0 z-10 glass-heavy px-4 py-3 border-t border-white/8">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center justify-center gap-2">
         {/* Refresh Button */}
         <button
           onClick={onRefresh}
           disabled={isRefreshing}
-          className="
-            flex-shrink-0 p-2.5 rounded-lg glass-hover glass-focus
-            text-glass-secondary hover:text-glass-primary
-            disabled:opacity-50 disabled:cursor-not-allowed
-          "
+          className="flex-shrink-0 w-11 h-11 rounded-lg glass-hover glass-focus text-glass-secondary hover:text-glass-primary disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
           title="Refresh tabs"
         >
           <RefreshCw className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
@@ -61,11 +84,7 @@ export function Footer({
         {showCancel && (
           <button
             onClick={onCancel}
-            className="
-              flex-shrink-0 p-2.5 rounded-lg glass-hover glass-focus
-              text-red-400 hover:text-red-300
-              disabled:opacity-50 disabled:cursor-not-allowed
-            "
+            className="flex-shrink-0 w-11 h-11 rounded-lg glass-hover glass-focus text-red-400 hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
             title="Clear selection"
           >
             <X className="w-5 h-5" />
@@ -76,53 +95,39 @@ export function Footer({
         <button
           onClick={onExtractToRight}
           disabled={isExtractToRightDisabled}
-          className={`
-            flex-1 py-2.5 px-3 rounded-lg font-medium
-            flex items-center justify-center gap-2
-            transition-all duration-300 transform glass-focus
-            ${isExtractToRightDisabled
-              ? 'glass-heavy text-glass-muted cursor-not-allowed'
-              : toRightExtractionStatus === 'success'
-                ? 'glass-orange text-orange-300 border border-orange-500/30'
-                : toRightExtractionStatus === 'partial'
-                  ? 'glass-amber text-amber-300 border border-amber-500/30'
-                  : toRightExtractionStatus === 'error'
-                    ? 'glass-red text-red-300 border border-red-500/30'
-                    : 'glass-heavy text-white border border-white/10 hover:scale-[1.02]'
-            }
-          `}
+          className={getButtonClassName(isExtractToRightDisabled, toRightExtractionStatus, 'orange')}
           title="Extract content from tabs to the right of current tab"
         >
           {isExtractingToRight ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span>Extracting...</span>
-            </>
+            <Loader2 className="w-5 h-5 animate-spin" />
           ) : toRightExtractionStatus === 'success' ? (
-            <>
-              <CheckCircle className="w-5 h-5" />
-              <span>Copied!</span>
-            </>
+            <CheckCircle className="w-5 h-5" />
           ) : toRightExtractionStatus === 'partial' ? (
-            <>
-              <AlertTriangle className="w-5 h-5" />
-              <span>Partial</span>
-            </>
+            <AlertTriangle className="w-5 h-5" />
           ) : toRightExtractionStatus === 'error' ? (
-            <>
-              <AlertCircle className="w-5 h-5" />
-              <span>Failed</span>
-            </>
-          ) : tabsToRightCount === 0 ? (
-            <>
-              <ArrowRight className="w-5 h-5" />
-              <span>No tabs</span>
-            </>
+            <AlertCircle className="w-5 h-5" />
           ) : (
-            <>
-              <ArrowRight className="w-5 h-5" />
-              <span>Right {tabsToRightCount}</span>
-            </>
+            <ArrowRight className="w-5 h-5" />
+          )}
+        </button>
+
+        {/* Highlighted Tabs Button */}
+        <button
+          onClick={onExtractHighlighted}
+          disabled={isExtractHighlightedDisabled}
+          className={getButtonClassName(isExtractHighlightedDisabled, highlightedExtractionStatus, 'purple')}
+          title="Extract content from tabs selected in Chrome's tab bar (Cmd+click / Shift+click)"
+        >
+          {isExtractingHighlighted ? (
+            <Loader2 className="w-5 h-5 animate-spin" />
+          ) : highlightedExtractionStatus === 'success' ? (
+            <CheckCircle className="w-5 h-5" />
+          ) : highlightedExtractionStatus === 'partial' ? (
+            <AlertTriangle className="w-5 h-5" />
+          ) : highlightedExtractionStatus === 'error' ? (
+            <AlertCircle className="w-5 h-5" />
+          ) : (
+            <Highlighter className="w-5 h-5" />
           )}
         </button>
 
@@ -130,49 +135,19 @@ export function Footer({
         <button
           onClick={onExtract}
           disabled={isExtractDisabled}
-          className={`
-            flex-1 py-2.5 px-4 rounded-lg font-medium
-            flex items-center justify-center gap-2
-            transition-all duration-300 transform glass-focus
-            ${isExtractDisabled
-              ? 'glass-heavy text-glass-muted cursor-not-allowed'
-              : extractionStatus === 'success'
-                ? 'glass-teal text-teal-300 border border-teal-500/30'
-                : extractionStatus === 'partial'
-                  ? 'glass-amber text-amber-300 border border-amber-500/30'
-                  : extractionStatus === 'error'
-                    ? 'glass-red text-red-300 border border-red-500/30'
-                    : 'glass-heavy text-white border border-white/10 hover:scale-[1.02]'
-            }
-          `}
+          className={getButtonClassName(isExtractDisabled, extractionStatus, 'teal')}
+          title={`Copy ${selectedCount} selected tab${selectedCount !== 1 ? 's' : ''}`}
         >
           {isExtracting ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span>Extracting...</span>
-            </>
+            <Loader2 className="w-5 h-5 animate-spin" />
           ) : extractionStatus === 'success' ? (
-            <>
-              <CheckCircle className="w-5 h-5" />
-              <span>Copied!</span>
-            </>
+            <CheckCircle className="w-5 h-5" />
           ) : extractionStatus === 'partial' ? (
-            <>
-              <AlertTriangle className="w-5 h-5" />
-              <span>Partial ({failedCount} failed)</span>
-            </>
+            <AlertTriangle className="w-5 h-5" />
           ) : extractionStatus === 'error' ? (
-            <>
-              <AlertCircle className="w-5 h-5" />
-              <span>Extraction failed</span>
-            </>
-          ) : selectedCount === 0 ? (
-            <span>Select tabs</span>
+            <AlertCircle className="w-5 h-5" />
           ) : (
-            <>
-              <Copy className="w-5 h-5" />
-              <span>Copy {selectedCount}</span>
-            </>
+            <Copy className="w-5 h-5" />
           )}
         </button>
       </div>

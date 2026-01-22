@@ -5,6 +5,8 @@ export interface ChromeTab {
   title: string;
   url: string;
   favIconUrl?: string;
+  highlighted?: boolean;
+  active?: boolean;
 }
 
 export interface DomainGroup {
