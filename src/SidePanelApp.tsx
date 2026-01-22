@@ -16,8 +16,154 @@ import { fetchYoutubeSubtitles } from './utils/subtitles';
 import { getCachedContent, setCachedContent } from './utils/cache';
 import { getTabsToRight } from './utils/tabHelpers';
 import { formatExport, generateFilename, getMimeType, downloadAsFile } from './utils/exporters';
+import { withTimeout } from './utils/asyncHelpers';
 import type { ExtractedData, ExtractionResult, ExtractionErrorInfo, ExtractionStatus, ExportFormat } from './types';
 import { SubtitleError } from './types';
+
+const EXTRACTION_TIMEOUT_MS = 10000; // 10 seconds
+
+// Helper function to extract a single tab
+async function extractTab(
+  id: number
+): Promise<{ result: ExtractedData | null; error: ExtractionErrorInfo | null }> {
+  let tab: chrome.tabs.Tab | null = null;
+  try {
+    tab = await chrome.tabs.get(id);
+    if (!tab.url) {
+      console.warn(`Tab ${id}: No URL found`);
+      return { result: null, error: null };
+    }
+
+    const tabUrl = tab.url;
+
+    if (isYouTubeUrl(tabUrl)) {
+      try {
+        const { title, text } = await fetchYoutubeSubtitles(tabUrl, {
+          onRetry: (attempt, err) => {
+            console.warn(`Retry ${attempt} for ${tabUrl}:`, err.message);
+          },
+        });
+        return {
+          result: {
+            id,
+            timestamp: new Date().toISOString(),
+            title,
+            url: tabUrl,
+            text,
+          },
+          error: null,
+        };
+      } catch (err) {
+        const errorInfo = createExtractionError(id, tab, err);
+        console.error(`Failed to extract YouTube subtitles for tab ${id}:`, err);
+        return { result: null, error: errorInfo };
+      }
+    }
+
+    const cachedContent = await getCachedContent(id);
+    if (cachedContent) {
+      return {
+        result: {
+          id,
+          timestamp: new Date().toISOString(),
+          title: cachedContent.title,
+          url: cachedContent.url,
+          text: cachedContent.text,
+        },
+        error: null,
+      };
+    }
+
+    const injection = await chrome.scripting.executeScript({
+      target: { tabId: id },
+      func: getPageHTML,
+    });
+
+    const result = injection[0]?.result as ExtractionResult | undefined;
+
+    if (!result) {
+      console.warn(`Tab ${id}: No content extracted (tab may be suspended or not loaded)`);
+      return { result: null, error: null };
+    }
+
+    await setCachedContent(id, { text: result.text, title: result.title, url: result.url });
+
+    return {
+      result: {
+        id,
+        timestamp: new Date().toISOString(),
+        title: result.title,
+        url: result.url,
+        text: result.text,
+      },
+      error: null,
+    };
+  } catch (err) {
+    const errorInfo = createExtractionError(id, tab, err);
+    console.error(`Failed to extract tab ${id}:`, err);
+    return { result: null, error: errorInfo };
+  }
+}
+
+// Helper function to create extraction error
+function createExtractionError(id: number, tab: chrome.tabs.Tab | null, err: unknown): ExtractionErrorInfo {
+  let code: SubtitleError['code'] = 'NETWORK_ERROR';
+  let userMessage = 'Extraction failed';
+
+  if (err instanceof SubtitleError) {
+    code = err.code;
+    userMessage = err.message;
+  }
+
+  return {
+    tabId: id,
+    url: tab?.url || 'unknown',
+    title: tab?.title || 'Unknown',
+    errorCode: code,
+    userMessage,
+  };
+}
+
+// Helper to extract tabs with timeout and partial results preservation
+async function extractTabsWithTimeout(
+  tabIds: number[],
+  timeoutMs: number
+): Promise<{ results: ExtractedData[]; errors: ExtractionErrorInfo[]; timedOut: boolean }> {
+  const startTime = Date.now();
+  const results: ExtractedData[] = [];
+  const errors: ExtractionErrorInfo[] = [];
+  const pendingExtractions = new Map<number, Promise<{ result: ExtractedData | null; error: ExtractionErrorInfo | null }>>();
+
+  // Start all extractions
+  for (const id of tabIds) {
+    pendingExtractions.set(id, extractTab(id));
+  }
+
+  // Wait for results with timeout
+  while (pendingExtractions.size > 0 && Date.now() - startTime < timeoutMs) {
+    const remainingTime = timeoutMs - (Date.now() - startTime);
+    if (remainingTime <= 0) break;
+
+    // Race between the next extraction and the timeout
+    try {
+      const [nextId, nextPromise] = Array.from(pendingExtractions.entries())[0];
+      const { result, error } = await withTimeout(nextPromise, remainingTime);
+
+      if (error) {
+        errors.push(error);
+      } else if (result) {
+        results.push(result);
+      }
+      pendingExtractions.delete(nextId);
+    } catch {
+      // Timeout occurred for this specific extraction
+      break;
+    }
+  }
+
+  const timedOut = pendingExtractions.size > 0;
+  return { results, errors, timedOut };
+}
 
 export function SidePanelApp() {
   const { groups, isLoading, error, refresh } = useTabs();
@@ -97,87 +243,12 @@ export function SidePanelApp() {
     setExtractionErrors([]);
     toast.loading('Extracting content...', { id: 'extract-status' });
 
-    const errors: ExtractionErrorInfo[] = [];
-
     try {
-      const results = await Promise.all(
-        selectedIds.map(async (id: number): Promise<ExtractedData | null> => {
-          let tab: chrome.tabs.Tab | null = null;
-          try {
-            tab = await chrome.tabs.get(id);
-            if (!tab.url) {
-              console.warn(`Tab ${id}: No URL found`);
-              return null;
-            }
-
-            const tabUrl = tab.url;
-
-            if (isYouTubeUrl(tabUrl)) {
-              try {
-                const { title, text } = await fetchYoutubeSubtitles(tabUrl, {
-                  onRetry: (attempt, err) => {
-                    console.warn(`Retry ${attempt} for ${tabUrl}:`, err.message);
-                  },
-                });
-                return {
-                  id,
-                  timestamp: new Date().toISOString(),
-                  title,
-                  url: tabUrl,
-                  text,
-                };
-              } catch (err) {
-                const errorInfo = createExtractionError(id, tab, err);
-                errors.push(errorInfo);
-                console.error(`Failed to extract YouTube subtitles for tab ${id}:`, err);
-                return null;
-              }
-            }
-
-            const cachedContent = await getCachedContent(id);
-            if (cachedContent) {
-              return {
-                id,
-                timestamp: new Date().toISOString(),
-                title: cachedContent.title,
-                url: cachedContent.url,
-                text: cachedContent.text,
-              };
-            }
-
-            const injection = await chrome.scripting.executeScript({
-              target: { tabId: id },
-              func: getPageHTML,
-            });
-
-            const result = injection[0]?.result as ExtractionResult | undefined;
-
-            if (!result) {
-              console.warn(`Tab ${id}: No content extracted (tab may be suspended or not loaded)`);
-              return null;
-            }
-
-            await setCachedContent(id, { text: result.text, title: result.title, url: result.url });
-
-            return {
-              id,
-              timestamp: new Date().toISOString(),
-              title: result.title,
-              url: result.url,
-              text: result.text,
-            };
-          } catch (err) {
-            const errorInfo = createExtractionError(id, tab, err);
-            errors.push(errorInfo);
-            console.error(`Failed to extract tab ${id}:`, err);
-            return null;
-          }
-        })
-      );
+      const { results, errors, timedOut } = await extractTabsWithTimeout(selectedIds, EXTRACTION_TIMEOUT_MS);
 
       setExtractionErrors(errors);
 
-      const validResults = results.filter((r): r is ExtractedData => r !== null);
+      const validResults = results;
       const jsonString = JSON.stringify(validResults, null, 2);
       await navigator.clipboard.writeText(jsonString);
 
@@ -189,7 +260,17 @@ export function SidePanelApp() {
 
       toast.dismiss('extract-status');
 
-      if (errors.length > 0 && validResults.length === 0) {
+      if (timedOut) {
+        setExtractionStatus(validResults.length > 0 ? 'partial' : 'error');
+        if (validResults.length > 0) {
+          toast(`Extraction timed out after 10s. Extracted ${validResults.length} of ${selectedIds.length} tabs.`, {
+            icon: '⚠️',
+            duration: 5000,
+          });
+        } else {
+          toast.error('Extraction timed out. Some tabs may be unresponsive.');
+        }
+      } else if (errors.length > 0 && validResults.length === 0) {
         setExtractionStatus('error');
         toast.error(`Extraction failed for all ${selectedIds.length} tab${selectedIds.length > 1 ? 's' : ''}`);
       } else if (errors.length > 0) {
@@ -224,91 +305,12 @@ export function SidePanelApp() {
     setToRightExtractionErrors([]);
     toast.loading('Extracting content from tabs to the right...', { id: 'extract-to-right-status' });
 
-    const errors: ExtractionErrorInfo[] = [];
-
     try {
-      const results = await Promise.all(
-        tabIds.map(async (id): Promise<ExtractedData | null> => {
-          let tab: chrome.tabs.Tab | null = null;
-          try {
-            tab = await chrome.tabs.get(id);
-            if (!tab.url) {
-              console.warn(`Tab ${id}: No URL found`);
-              return null;
-            }
-
-            const tabUrl = tab.url;
-
-            if (isYouTubeUrl(tabUrl)) {
-              try {
-                const { title, text } = await fetchYoutubeSubtitles(tabUrl, {
-                  onRetry: (attempt, err) => {
-                    console.warn(`Retry ${attempt} for ${tabUrl}:`, err.message);
-                  },
-                });
-                return {
-                  id,
-                  timestamp: new Date().toISOString(),
-                  title,
-                  url: tabUrl,
-                  text,
-                };
-              } catch (err) {
-                const errorInfo = createExtractionError(id, tab, err);
-                errors.push(errorInfo);
-                console.error(`Failed to extract YouTube subtitles for tab ${id}:`, err);
-                return null;
-              }
-            }
-
-            const cachedContent = await getCachedContent(id);
-            if (cachedContent) {
-              return {
-                id,
-                timestamp: new Date().toISOString(),
-                title: cachedContent.title,
-                url: cachedContent.url,
-                text: cachedContent.text,
-              };
-            }
-
-            const injection = await chrome.scripting.executeScript({
-              target: { tabId: id },
-              func: getPageHTML,
-            });
-
-            const result = injection[0]?.result as ExtractionResult | undefined;
-
-            if (!result) {
-              console.warn(`Tab ${id}: No content extracted (tab may be suspended or not loaded)`);
-              return null;
-            }
-
-            await setCachedContent(id, { text: result.text, title: result.title, url: result.url });
-
-            return {
-              id,
-              timestamp: new Date().toISOString(),
-              title: result.title,
-              url: result.url,
-              text: result.text,
-            };
-          } catch (err) {
-            const errorInfo = createExtractionError(id, tab, err);
-            errors.push(errorInfo);
-            console.error(`Failed to extract tab ${id}:`, err);
-            toast.error(
-              `Failed: ${tab?.title?.substring(0, 20)}...`,
-              { id: `extract-to-right-${id}`, duration: 3000 }
-            );
-            return null;
-          }
-        })
-      );
+      const { results, errors, timedOut } = await extractTabsWithTimeout(tabIds, EXTRACTION_TIMEOUT_MS);
 
       setToRightExtractionErrors(errors);
 
-      const validResults = results.filter((r): r is ExtractedData => r !== null);
+      const validResults = results;
       const jsonString = JSON.stringify(validResults, null, 2);
       await navigator.clipboard.writeText(jsonString);
 
@@ -320,7 +322,17 @@ export function SidePanelApp() {
 
       toast.dismiss('extract-to-right-status');
 
-      if (errors.length > 0 && validResults.length === 0) {
+      if (timedOut) {
+        setToRightExtractionStatus(validResults.length > 0 ? 'partial' : 'error');
+        if (validResults.length > 0) {
+          toast(`Extraction timed out after 10s. Extracted ${validResults.length} of ${tabIds.length} tabs.`, {
+            icon: '⚠️',
+            duration: 5000,
+          });
+        } else {
+          toast.error('Extraction timed out. Some tabs may be unresponsive.');
+        }
+      } else if (errors.length > 0 && validResults.length === 0) {
         setToRightExtractionStatus('error');
         toast.error(`Extraction failed for all ${tabIds.length} tab${tabIds.length > 1 ? 's' : ''}`);
       } else if (errors.length > 0) {
@@ -354,91 +366,12 @@ export function SidePanelApp() {
     setHighlightedExtractionErrors([]);
     toast.loading('Extracting content from highlighted tabs...', { id: 'extract-highlighted-status' });
 
-    const errors: ExtractionErrorInfo[] = [];
-
     try {
-      const results = await Promise.all(
-        tabIds.map(async (id): Promise<ExtractedData | null> => {
-          let tab: chrome.tabs.Tab | null = null;
-          try {
-            tab = await chrome.tabs.get(id);
-            if (!tab.url) {
-              console.warn(`Tab ${id}: No URL found`);
-              return null;
-            }
-
-            const tabUrl = tab.url;
-
-            if (isYouTubeUrl(tabUrl)) {
-              try {
-                const { title, text } = await fetchYoutubeSubtitles(tabUrl, {
-                  onRetry: (attempt, err) => {
-                    console.warn(`Retry ${attempt} for ${tabUrl}:`, err.message);
-                  },
-                });
-                return {
-                  id,
-                  timestamp: new Date().toISOString(),
-                  title,
-                  url: tabUrl,
-                  text,
-                };
-              } catch (err) {
-                const errorInfo = createExtractionError(id, tab, err);
-                errors.push(errorInfo);
-                console.error(`Failed to extract YouTube subtitles for tab ${id}:`, err);
-                return null;
-              }
-            }
-
-            const cachedContent = await getCachedContent(id);
-            if (cachedContent) {
-              return {
-                id,
-                timestamp: new Date().toISOString(),
-                title: cachedContent.title,
-                url: cachedContent.url,
-                text: cachedContent.text,
-              };
-            }
-
-            const injection = await chrome.scripting.executeScript({
-              target: { tabId: id },
-              func: getPageHTML,
-            });
-
-            const result = injection[0]?.result as ExtractionResult | undefined;
-
-            if (!result) {
-              console.warn(`Tab ${id}: No content extracted (tab may be suspended or not loaded)`);
-              return null;
-            }
-
-            await setCachedContent(id, { text: result.text, title: result.title, url: result.url });
-
-            return {
-              id,
-              timestamp: new Date().toISOString(),
-              title: result.title,
-              url: result.url,
-              text: result.text,
-            };
-          } catch (err) {
-            const errorInfo = createExtractionError(id, tab, err);
-            errors.push(errorInfo);
-            console.error(`Failed to extract tab ${id}:`, err);
-            toast.error(
-              `Failed: ${tab?.title?.substring(0, 20)}...`,
-              { id: `extract-highlighted-${id}`, duration: 3000 }
-            );
-            return null;
-          }
-        })
-      );
+      const { results, errors, timedOut } = await extractTabsWithTimeout(tabIds, EXTRACTION_TIMEOUT_MS);
 
       setHighlightedExtractionErrors(errors);
 
-      const validResults = results.filter((r): r is ExtractedData => r !== null);
+      const validResults = results;
       const jsonString = JSON.stringify(validResults, null, 2);
       await navigator.clipboard.writeText(jsonString);
 
@@ -450,7 +383,17 @@ export function SidePanelApp() {
 
       toast.dismiss('extract-highlighted-status');
 
-      if (errors.length > 0 && validResults.length === 0) {
+      if (timedOut) {
+        setHighlightedExtractionStatus(validResults.length > 0 ? 'partial' : 'error');
+        if (validResults.length > 0) {
+          toast(`Extraction timed out after 10s. Extracted ${validResults.length} of ${tabIds.length} tabs.`, {
+            icon: '⚠️',
+            duration: 5000,
+          });
+        } else {
+          toast.error('Extraction timed out. Some tabs may be unresponsive.');
+        }
+      } else if (errors.length > 0 && validResults.length === 0) {
         setHighlightedExtractionStatus('error');
         toast.error(`Extraction failed for all ${tabIds.length} tab${tabIds.length > 1 ? 's' : ''}`);
       } else if (errors.length > 0) {
@@ -535,24 +478,6 @@ export function SidePanelApp() {
     }
   }, []);
 
-  function createExtractionError(id: number, tab: chrome.tabs.Tab | null, err: unknown): ExtractionErrorInfo {
-    let code: SubtitleError['code'] = 'NETWORK_ERROR';
-    let userMessage = 'Extraction failed';
-
-    if (err instanceof SubtitleError) {
-      code = err.code;
-      userMessage = err.message;
-    }
-
-    return {
-      tabId: id,
-      url: tab?.url || 'unknown',
-      title: tab?.title || 'Unknown',
-      errorCode: code,
-      userMessage,
-    };
-  }
-
   return (
     <div className="h-screen w-full flex flex-col text-glass-primary">
       {/* Error Alert */}
@@ -619,7 +544,6 @@ export function SidePanelApp() {
         isExtractingHighlighted={isExtractingHighlighted}
         highlightedExtractionStatus={highlightedExtractionStatus}
         highlightedExtractionErrors={highlightedExtractionErrors}
-        historyCount={history.count}
         onOpenHistory={handleOpenHistory}
         onOpenExportModal={handleOpenExportModal}
       />

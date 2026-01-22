@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, Download, Trash2, Calendar, HardDrive, FileText } from 'lucide-react';
+import { ChevronDown, ChevronRight, Download, Trash2, Clock } from 'lucide-react';
 import type { HistoryEntry } from '../types';
 
 interface HistoryItemProps {
@@ -24,7 +24,18 @@ function formatRelativeTime(timestamp: number): string {
   if (days < 7) return `${days}d ago`;
 
   const date = new Date(timestamp);
-  return date.toLocaleDateString();
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) {
+    return `Today at ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+  }
+  if (date.toDateString() === yesterday.toDateString()) {
+    return `Yesterday at ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+  }
+
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 function formatBytes(bytes: number): string {
@@ -35,34 +46,30 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-function getFormatBadgeColor(format: string): string {
-  switch (format) {
-    case 'json':
-      return 'bg-amber-500/20 text-amber-300 border-amber-500/30';
-    case 'markdown':
-      return 'bg-blue-500/20 text-blue-300 border-blue-500/30';
-    case 'text':
-      return 'bg-gray-500/20 text-gray-300 border-gray-500/30';
-    case 'csv':
-      return 'bg-green-500/20 text-green-300 border-green-500/30';
-    case 'html':
-      return 'bg-orange-500/20 text-orange-300 border-orange-500/30';
-    default:
-      return 'bg-gray-500/20 text-gray-300 border-gray-500/30';
-  }
-}
-
 export function HistoryItem({ entry, FormatIcon, onReExport, onDelete }: HistoryItemProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
+  const handleDelete = () => {
+    if (window.confirm('Delete this extraction history?')) {
+      onDelete();
+    }
+  };
+
+  // Build metadata parts
+  const metadataParts: string[] = [];
+  metadataParts.push(`${entry.tabCount} tab${entry.tabCount !== 1 ? 's' : ''}`);
+  if (entry.dataSize > 0) {
+    metadataParts.push(formatBytes(entry.dataSize));
+  }
+
   return (
-    <div className="glass-medium rounded-xl overflow-hidden transition-all duration-200 hover:border-white/20">
+    <div className="glass-medium rounded-xl overflow-hidden transition-all duration-200 hover:border-white/20 hover:bg-white/5">
       {/* Header */}
       <div className="flex items-center gap-3 p-3">
         {/* Expand/Collapse Button */}
         <button
           onClick={() => setIsExpanded(!isExpanded)}
-          className="p-1 rounded-lg glass-hover text-glass-muted hover:text-glass-primary transition-colors shrink-0"
+          className="p-1.5 rounded-lg glass-hover text-glass-muted hover:text-glass-primary transition-colors shrink-0"
           aria-label={isExpanded ? 'Collapse' : 'Expand'}
         >
           {isExpanded ? (
@@ -79,47 +86,31 @@ export function HistoryItem({ entry, FormatIcon, onReExport, onDelete }: History
 
         {/* Content */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${getFormatBadgeColor(entry.format)}`}>
-              {entry.format.toUpperCase()}
-            </span>
-            {entry.exportType === 'file' && (
-              <span className="text-[10px] text-glass-muted flex items-center gap-1">
-                <Download className="w-3 h-3" />
-                File
-              </span>
-            )}
+          {/* Primary: Timestamp */}
+          <div className="text-sm font-semibold text-glass-primary mb-0.5 truncate">
+            {formatRelativeTime(entry.timestamp)}
           </div>
-          <div className="flex items-center gap-3 text-xs text-glass-muted">
+
+          {/* Metadata: tabs • size */}
+          <div className="flex items-center gap-2 text-xs text-glass-muted">
             <span className="flex items-center gap-1">
-              <FileText className="w-3 h-3" />
-              {entry.tabCount} tab{entry.tabCount !== 1 ? 's' : ''}
+              {metadataParts.join(' • ')}
             </span>
-            <span className="flex items-center gap-1">
-              <Calendar className="w-3 h-3" />
-              {formatRelativeTime(entry.timestamp)}
-            </span>
-            {entry.dataSize > 0 && (
-              <span className="flex items-center gap-1">
-                <HardDrive className="w-3 h-3" />
-                {formatBytes(entry.dataSize)}
-              </span>
-            )}
           </div>
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={onReExport}
-            className="p-2 rounded-lg glass-hover text-glass-secondary hover:text-teal-400 transition-colors"
+            className="p-2.5 rounded-lg glass-hover text-glass-secondary hover:text-teal-400 transition-colors"
             title="Re-export"
           >
             <Download className="w-4 h-4" />
           </button>
           <button
-            onClick={onDelete}
-            className="p-2 rounded-lg glass-hover text-glass-secondary hover:text-red-400 transition-colors"
+            onClick={handleDelete}
+            className="p-2.5 rounded-lg glass-hover text-glass-secondary hover:text-red-400 transition-colors"
             title="Delete"
           >
             <Trash2 className="w-4 h-4" />
@@ -161,9 +152,12 @@ export function HistoryItem({ entry, FormatIcon, onReExport, onDelete }: History
               </div>
             )}
 
-            {/* Timestamp */}
+            {/* Timestamp with clock icon */}
             <div>
-              <p className="text-xs text-glass-muted mb-1.5">Extracted</p>
+              <p className="text-xs text-glass-muted mb-1.5 flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                Extracted
+              </p>
               <p className="text-xs text-glass-secondary">
                 {new Date(entry.timestamp).toLocaleString()}
               </p>
