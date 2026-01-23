@@ -24,7 +24,6 @@ interface FooterProps {
   highlightedExtractionErrors: ExtractionErrorInfo[];
   // History props
   onOpenHistory: () => void;
-  onOpenExportModal: () => void;
   // Close tabs toggle props
   closeTabsEnabled: boolean;
   onToggleCloseTabs: () => void;
@@ -53,7 +52,6 @@ export function Footer({
   highlightedExtractionErrors: _highlightedExtractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
   // History props
   onOpenHistory,
-  onOpenExportModal,
   // Close tabs toggle props
   closeTabsEnabled,
   onToggleCloseTabs,
@@ -159,10 +157,10 @@ export function Footer({
 
         {/* Copy Button */}
         <button
-          onClick={selectedCount > 0 ? onOpenExportModal : onExtract}
+          onClick={onExtract}
           disabled={isExtractDisabled}
           className={getButtonClassName(isExtractDisabled, extractionStatus, 'teal')}
-          title={`${selectedCount > 0 ? 'Export options' : 'Copy'} ${selectedCount} selected tab${selectedCount !== 1 ? 's' : ''}`}
+          title={`Copy ${selectedCount} selected tab${selectedCount !== 1 ? 's' : ''} to clipboard`}
         >
           {isExtracting ? (
             <Loader2 className="w-5 h-5 animate-spin" />

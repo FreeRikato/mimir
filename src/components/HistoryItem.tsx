@@ -5,7 +5,7 @@ import type { HistoryEntry } from '../types';
 interface HistoryItemProps {
   entry: HistoryEntry;
   FormatIcon: React.ComponentType<{ className?: string }>;
-  onReExport: () => void;
+  onOpenExportFormatModal: () => void;
   onDelete: () => void;
   onCopy: () => void;
 }
@@ -47,7 +47,7 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-export function HistoryItem({ entry, FormatIcon, onReExport, onDelete, onCopy }: HistoryItemProps) {
+export function HistoryItem({ entry, FormatIcon, onOpenExportFormatModal, onDelete, onCopy }: HistoryItemProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const handleDelete = () => {
@@ -110,9 +110,9 @@ export function HistoryItem({ entry, FormatIcon, onReExport, onDelete, onCopy }:
             <Copy className="w-4 h-4" />
           </button>
           <button
-            onClick={onReExport}
+            onClick={onOpenExportFormatModal}
             className="p-2.5 rounded-lg glass-hover text-glass-secondary hover:text-teal-400 transition-colors"
-            title="Re-export"
+            title="Export"
           >
             <Download className="w-4 h-4" />
           </button>
