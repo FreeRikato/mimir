@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Download, Clipboard, FileText, FileJson, FileSpreadsheet, Globe } from 'lucide-react';
+import { X, Download, Clipboard, FileText, FileJson, FileSpreadsheet, Globe, Check } from 'lucide-react';
 import type { ExportFormat, ExportAction, ExtractedData } from '../types';
 import { formatExport, generateFilename } from '../utils/exporters';
 
@@ -134,7 +134,6 @@ export function ExportModal({ isOpen, onClose, data, onExportComplete }: ExportM
   if (!isOpen) return null;
 
   const selectedFormatOption = FORMAT_OPTIONS.find(opt => opt.value === selectedFormat);
-  const selectedActionOption = ACTION_OPTIONS.find(opt => opt.value === selectedAction);
 
   return (
     <div
@@ -161,7 +160,7 @@ export function ExportModal({ isOpen, onClose, data, onExportComplete }: ExportM
             <label className="block text-sm font-medium text-glass-secondary mb-2.5">
               Export Format
             </label>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="flex flex-col gap-2">
               {FORMAT_OPTIONS.map((option) => {
                 const Icon = option.icon;
                 const isSelected = selectedFormat === option.value;
@@ -170,18 +169,21 @@ export function ExportModal({ isOpen, onClose, data, onExportComplete }: ExportM
                     key={option.value}
                     onClick={() => setSelectedFormat(option.value)}
                     className={`
-                      flex flex-col items-start p-3 rounded-xl text-left transition-all duration-200
+                      flex items-center justify-between p-3 rounded-xl text-left transition-all duration-200
                       ${isSelected
                         ? 'glass-teal border-teal-400/30 text-white'
                         : 'glass-heavy border-white/10 text-glass-secondary hover:border-white/20'
                       }
                     `}
                   >
-                    <div className="flex items-center gap-2 w-full">
+                    <div className="flex items-center gap-2.5">
                       <Icon className={`w-4 h-4 ${isSelected ? 'text-teal-300' : ''}`} />
-                      <span className="font-medium text-sm">{option.label}</span>
+                      <div className="flex flex-col">
+                        <span className="font-medium text-sm">{option.label}</span>
+                        <span className="text-xs text-glass-muted">{option.description}</span>
+                      </div>
                     </div>
-                    <span className="text-xs text-glass-muted mt-1">{option.description}</span>
+                    {isSelected && <Check className="w-4 h-4 text-teal-300" />}
                   </button>
                 );
               })}
@@ -189,10 +191,7 @@ export function ExportModal({ isOpen, onClose, data, onExportComplete }: ExportM
           </div>
 
           {/* Action Selection */}
-          <div>
-            <label className="block text-sm font-medium text-glass-secondary mb-2.5">
-              Destination
-            </label>
+          <div aria-label="Destination">
             <div className="grid grid-cols-2 gap-2">
               {ACTION_OPTIONS.map((option) => {
                 const Icon = option.icon;
@@ -202,15 +201,18 @@ export function ExportModal({ isOpen, onClose, data, onExportComplete }: ExportM
                     key={option.value}
                     onClick={() => setSelectedAction(option.value)}
                     className={`
-                      flex items-center gap-2.5 p-3 rounded-xl text-left transition-all duration-200
+                      flex items-center justify-between gap-2.5 p-3 rounded-xl text-left transition-all duration-200
                       ${isSelected
                         ? 'glass-teal border-teal-400/30 text-white'
                         : 'glass-heavy border-white/10 text-glass-secondary hover:border-white/20'
                       }
                     `}
                   >
-                    <Icon className={`w-4 h-4 ${isSelected ? 'text-teal-300' : ''}`} />
-                    <span className="font-medium text-sm">{option.label}</span>
+                    <div className="flex items-center gap-2.5">
+                      <Icon className={`w-4 h-4 ${isSelected ? 'text-teal-300' : ''}`} />
+                      <span className="font-medium text-sm">{option.label}</span>
+                    </div>
+                    {isSelected && <Check className="w-4 h-4 text-teal-300" />}
                   </button>
                 );
               })}
@@ -228,7 +230,7 @@ export function ExportModal({ isOpen, onClose, data, onExportComplete }: ExportM
                 type="text"
                 value={filename}
                 onChange={handleFilenameChange}
-                className="w-full px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 text-glass-primary text-sm
+                className="w-full px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 text-glass-primary text-sm truncate-start
                          placeholder:text-glass-muted focus:outline-none focus:border-teal-400/50 focus:ring-1 focus:ring-teal-400/50
                          transition-all"
                 placeholder="Enter filename..."
@@ -241,14 +243,13 @@ export function ExportModal({ isOpen, onClose, data, onExportComplete }: ExportM
             <label className="block text-sm font-medium text-glass-secondary mb-2.5">
               Preview
             </label>
-            <div className="glass-medium rounded-lg p-3 h-32 overflow-y-auto">
+            <div className="glass-medium rounded-lg p-3 pr-4 h-32 overflow-y-auto">
               <pre className="text-xs text-glass-muted whitespace-pre-wrap font-mono">
                 {preview || 'No data to preview'}
               </pre>
             </div>
             <p className="text-xs text-glass-muted mt-1.5">
-              {data.length} tab{data.length !== 1 ? 's' : ''} • {selectedFormatOption?.label.toUpperCase()} •
-              {selectedActionOption?.label}
+              {data.length} tab{data.length !== 1 ? 's' : ''} • {selectedFormatOption?.label.toUpperCase()} → Ready to {selectedAction === 'file' ? 'download' : 'copy'}
             </p>
           </div>
         </div>
