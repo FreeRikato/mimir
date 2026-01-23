@@ -9,14 +9,13 @@ import { useCloseTabsSetting } from './hooks/useCloseTabsSetting';
 import { DomainGroup } from './components/DomainGroup';
 import { Footer } from './components/Footer';
 import { ExtractionErrorAlert } from './components/ExtractionErrorAlert';
-import { ExportModal } from './components/ExportModal';
 import { HistoryPanel } from './components/HistoryPanel';
 import { getPageHTML } from './utils/scripting';
 import { isYouTubeUrl } from './utils/youtube';
 import { fetchYoutubeSubtitles } from './utils/subtitles';
 import { getCachedContent, setCachedContent } from './utils/cache';
 import { getTabsToRight, closeTabsSafely } from './utils/tabHelpers';
-import { formatExport, generateFilename, getMimeType, downloadAsFile } from './utils/exporters';
+import { formatExport, getMimeType, downloadAsFile } from './utils/exporters';
 import type { ExtractedData, ExtractionResult, ExtractionErrorInfo, ExtractionStatus, ExportFormat, ExtractionProgress } from './types';
 import { ExtractionProgress as ExtractionProgressComponent } from './components/ExtractionProgress';
 import { SubtitleError } from './types';
@@ -328,9 +327,7 @@ export function SidePanelApp() {
   const [highlightedExtractionErrors, setHighlightedExtractionErrors] = useState<ExtractionErrorInfo[]>([]);
 
   // Export & History state
-  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(false);
-  const [lastExtractedData, setLastExtractedData] = useState<ExtractedData[]>([]);
 
   // Progress tracking state
   const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
@@ -428,7 +425,6 @@ export function SidePanelApp() {
         // Only save to history and close tabs if not cancelled
         if (!cancelled) {
           await history.addEntry(validResults, 'json', 'clipboard');
-          setLastExtractedData(validResults);
 
           // Close tabs if setting is enabled
           if (closeTabsEnabled) {
@@ -537,7 +533,6 @@ export function SidePanelApp() {
         // Only save to history and close tabs if not cancelled
         if (!cancelled) {
           await history.addEntry(validResults, 'json', 'clipboard');
-          setLastExtractedData(validResults);
 
           // Close tabs if setting is enabled
           if (closeTabsEnabled) {
@@ -630,7 +625,6 @@ export function SidePanelApp() {
         // Only save to history and close tabs if not cancelled
         if (!cancelled) {
           await history.addEntry(validResults, 'json', 'clipboard');
-          setLastExtractedData(validResults);
 
           // Close tabs if setting is enabled
           if (closeTabsEnabled) {
@@ -674,41 +668,6 @@ export function SidePanelApp() {
   }, [highlightedTabs, history, closeTabsEnabled, clearSelection]);
 
   // Export & History handlers
-  const handleOpenExportModal = useCallback(() => {
-    setIsExportModalOpen(true);
-  }, []);
-
-  const handleCloseExportModal = useCallback(() => {
-    setIsExportModalOpen(false);
-  }, []);
-
-  const handleExportFromModal = useCallback(async (
-    data: ExtractedData[],
-    format: ExportFormat,
-    action: 'clipboard' | 'file',
-    filename?: string
-  ) => {
-    try {
-      const formatted = formatExport(data, format);
-
-      if (action === 'clipboard') {
-        await navigator.clipboard.writeText(formatted);
-        toast.success(`Exported as ${format.toUpperCase()} and copied to clipboard`);
-      } else {
-        const mimeType = getMimeType(format);
-        const finalFilename = filename || generateFilename(format);
-        downloadAsFile(formatted, finalFilename, mimeType);
-        toast.success(`Downloaded as ${finalFilename}`);
-      }
-
-      // Save to history
-      await history.addEntry(data, format, action, filename);
-    } catch (err) {
-      console.error('Export failed:', err);
-      toast.error('Export failed. Please try again.');
-    }
-  }, [history]);
-
   const handleOpenHistory = useCallback(() => {
     setIsHistoryPanelOpen(true);
   }, []);
@@ -717,22 +676,23 @@ export function SidePanelApp() {
     setIsHistoryPanelOpen(false);
   }, []);
 
-  const handleReExport = useCallback(async (
+  const handleExportFromFormatModal = useCallback(async (
     data: ExtractedData[],
     format: ExportFormat,
-    filename?: string
+    filename: string
   ) => {
     try {
       const formatted = formatExport(data, format);
-      const finalFilename = filename || generateFilename(format);
       const mimeType = getMimeType(format);
-      downloadAsFile(formatted, finalFilename, mimeType);
-      toast.success(`Downloaded as ${finalFilename}`);
+      downloadAsFile(formatted, filename, mimeType);
+      toast.success(`Downloaded as ${filename}`);
+      // Save to history
+      await history.addEntry(data, format, 'file', filename);
     } catch (err) {
-      console.error('Re-export failed:', err);
-      toast.error('Re-export failed. Please try again.');
+      console.error('Export failed:', err);
+      toast.error('Export failed. Please try again.');
     }
-  }, []);
+  }, [history]);
 
   const handleCopy = useCallback(async (data: ExtractedData[], format: ExportFormat) => {
     try {
@@ -743,7 +703,7 @@ export function SidePanelApp() {
       console.error('Copy to clipboard failed:', err);
       toast.error('Failed to copy to clipboard');
     }
-  }, [formatExport]);
+  }, []);
 
   return (
     <div className="h-screen w-full flex flex-col text-glass-primary">
@@ -838,17 +798,8 @@ export function SidePanelApp() {
         highlightedExtractionStatus={highlightedExtractionStatus}
         highlightedExtractionErrors={highlightedExtractionErrors}
         onOpenHistory={handleOpenHistory}
-        onOpenExportModal={handleOpenExportModal}
         closeTabsEnabled={closeTabsEnabled}
         onToggleCloseTabs={toggleCloseTabs}
-      />
-
-      {/* Export Modal */}
-      <ExportModal
-        isOpen={isExportModalOpen}
-        onClose={handleCloseExportModal}
-        data={lastExtractedData.length > 0 ? lastExtractedData : []}
-        onExportComplete={handleExportFromModal}
       />
 
       {/* History Panel */}
@@ -865,7 +816,7 @@ export function SidePanelApp() {
         onClearAll={history.clearAll}
         onSearch={history.search}
         onClearSearch={history.clearSearch}
-        onReExport={handleReExport}
+        onExportFromFormatModal={handleExportFromFormatModal}
         onCopy={handleCopy}
       />
     </div>

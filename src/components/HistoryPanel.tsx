@@ -1,9 +1,9 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { X, Clock, Trash2, Loader2, FileText, FileJson, FileSpreadsheet, Globe } from 'lucide-react';
 import type { HistoryEntry, ExtractedData, ExportFormat } from '../types';
 import { HistoryItem } from './HistoryItem';
 import { SearchBar } from './SearchBar';
-import { generateFilename } from '../utils/exporters';
+import { ExportFormatModal } from './ExportFormatModal';
 
 interface HistoryPanelProps {
   isOpen: boolean;
@@ -18,7 +18,7 @@ interface HistoryPanelProps {
   onClearAll: () => void;
   onSearch: (query: { keywords?: string; dateFrom?: number; dateTo?: number }) => void;
   onClearSearch: () => void;
-  onReExport: (data: ExtractedData[], format: ExportFormat, filename?: string) => void;
+  onExportFromFormatModal: (data: ExtractedData[], format: ExportFormat, filename: string) => Promise<void> | void;
   onCopy: (data: ExtractedData[], format: ExportFormat) => void;
 }
 
@@ -43,11 +43,12 @@ export function HistoryPanel({
   onClearAll,
   onSearch,
   onClearSearch,
-  onReExport,
+  onExportFromFormatModal,
   onCopy,
 }: HistoryPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
+  const [formatModalEntry, setFormatModalEntry] = useState<HistoryEntry | null>(null);
 
   // Handle escape key
   useEffect(() => {
@@ -83,10 +84,13 @@ export function HistoryPanel({
 
   if (!isOpen) return null;
 
-  const handleReExport = (entry: HistoryEntry) => {
-    // For file exports, use the original filename
-    const filename = entry.exportType === 'file' ? entry.filename : generateFilename(entry.format);
-    onReExport(entry.data, entry.format, filename);
+  const handleOpenExportFormatModal = (entry: HistoryEntry) => {
+    setFormatModalEntry(entry);
+  };
+
+  const handleExportFromFormatModal = async (data: ExtractedData[], format: ExportFormat, filename: string) => {
+    await onExportFromFormatModal(data, format, filename);
+    setFormatModalEntry(null);
   };
 
   return (
@@ -167,7 +171,7 @@ export function HistoryPanel({
                     key={entry.id}
                     entry={entry}
                     FormatIcon={FormatIcon}
-                    onReExport={() => handleReExport(entry)}
+                    onOpenExportFormatModal={() => handleOpenExportFormatModal(entry)}
                     onDelete={() => onDelete(entry.id)}
                     onCopy={() => onCopy(entry.data, entry.format)}
                   />
@@ -185,6 +189,14 @@ export function HistoryPanel({
           )}
         </div>
       </div>
+
+      {/* Export Format Modal */}
+      <ExportFormatModal
+        isOpen={formatModalEntry !== null}
+        onClose={() => setFormatModalEntry(null)}
+        data={formatModalEntry?.data || []}
+        onExportComplete={handleExportFromFormatModal}
+      />
     </div>
   );
 }
