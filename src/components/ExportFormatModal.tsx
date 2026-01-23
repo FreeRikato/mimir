@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Download, FileText, FileJson, FileSpreadsheet, Globe } from 'lucide-react';
+import { X, Download, FileText, FileJson, FileSpreadsheet, Globe, Check } from 'lucide-react';
 import type { ExportFormat, ExtractedData } from '../types';
 import { formatExport, generateFilename } from '../utils/exporters';
 
@@ -14,42 +14,36 @@ const FORMAT_OPTIONS: Array<{
   value: ExportFormat;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  description: string;
   extension: string;
 }> = [
   {
     value: 'json',
     label: 'JSON',
     icon: FileJson,
-    description: 'Structured data format',
     extension: '.json',
   },
   {
     value: 'markdown',
     label: 'Markdown',
     icon: FileText,
-    description: 'Formatted text with headers',
     extension: '.md',
   },
   {
     value: 'text',
     label: 'Plain Text',
     icon: FileText,
-    description: 'Simple text without formatting',
     extension: '.txt',
   },
   {
     value: 'csv',
     label: 'CSV',
     icon: FileSpreadsheet,
-    description: 'Spreadsheet-compatible format',
     extension: '.csv',
   },
   {
     value: 'html',
     label: 'HTML',
     icon: Globe,
-    description: 'Styled HTML document',
     extension: '.html',
   },
 ];
@@ -111,30 +105,28 @@ export function ExportFormatModal({ isOpen, onClose, data, onExportComplete }: E
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex flex-col bg-black/60 backdrop-blur-sm"
       onKeyDown={handleKeyDown}
     >
-      <div className="glass-heavy w-full max-w-md rounded-2xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-300">
+      <div className="glass-heavy w-full h-full flex flex-col shadow-2xl animate-in slide-in-from-bottom-4 duration-300">
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-white/10">
+        <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0">
           <h2 className="text-lg font-semibold text-glass-primary">Export Format</h2>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg glass-hover text-glass-secondary hover:text-glass-primary transition-colors"
+            className="p-2 rounded-lg glass-hover text-glass-secondary hover:text-glass-primary transition-colors"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Content */}
-        <div className="p-5 space-y-5">
-          {/* Format Selection */}
+        {/* Scrollable Content */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+
+          {/* Format Selection (Vertical List) */}
           <div>
-            <label className="block text-sm font-medium text-glass-secondary mb-2.5">
-              Export Format
-            </label>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="flex flex-col gap-2">
               {FORMAT_OPTIONS.map((option) => {
                 const Icon = option.icon;
                 const isSelected = selectedFormat === option.value;
@@ -143,18 +135,26 @@ export function ExportFormatModal({ isOpen, onClose, data, onExportComplete }: E
                     key={option.value}
                     onClick={() => setSelectedFormat(option.value)}
                     className={`
-                      flex flex-col items-start p-3 rounded-xl text-left transition-all duration-200
+                      flex items-center justify-between p-3.5 rounded-xl transition-all duration-200 w-full group
                       ${isSelected
-                        ? 'glass-teal border-teal-400/30 text-white'
-                        : 'glass-heavy border-white/10 text-glass-secondary hover:border-white/20'
+                        ? 'glass-teal border-teal-400/30 text-white shadow-lg'
+                        : 'glass-medium border-white/5 text-glass-secondary hover:bg-white/5 hover:border-white/20'
                       }
                     `}
                   >
-                    <div className="flex items-center gap-2 w-full">
-                      <Icon className={`w-4 h-4 ${isSelected ? 'text-teal-300' : ''}`} />
-                      <span className="font-medium text-sm">{option.label}</span>
+                    <div className="flex items-center gap-3">
+                      <div className={`
+                        p-2 rounded-lg transition-colors
+                        ${isSelected ? 'bg-teal-500/20' : 'bg-white/5 group-hover:bg-white/10'}
+                      `}>
+                        <Icon className={`w-5 h-5 ${isSelected ? 'text-teal-300' : 'text-glass-secondary'}`} />
+                      </div>
+                      <span className="font-medium">{option.label}</span>
                     </div>
-                    <span className="text-xs text-glass-muted mt-1">{option.description}</span>
+
+                    {isSelected && (
+                      <Check className="w-5 h-5 text-teal-300" />
+                    )}
                   </button>
                 );
               })}
@@ -163,7 +163,7 @@ export function ExportFormatModal({ isOpen, onClose, data, onExportComplete }: E
 
           {/* Filename Input */}
           <div>
-            <label htmlFor="filename" className="block text-sm font-medium text-glass-secondary mb-2.5">
+            <label htmlFor="filename" className="block text-sm font-medium text-glass-secondary mb-2">
               Filename
             </label>
             <input
@@ -171,7 +171,7 @@ export function ExportFormatModal({ isOpen, onClose, data, onExportComplete }: E
               type="text"
               value={filename}
               onChange={handleFilenameChange}
-              className="w-full px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 text-glass-primary text-sm
+              className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-glass-primary text-sm
                        placeholder:text-glass-muted focus:outline-none focus:border-teal-400/50 focus:ring-1 focus:ring-teal-400/50
                        transition-all"
               placeholder="Enter filename..."
@@ -179,48 +179,48 @@ export function ExportFormatModal({ isOpen, onClose, data, onExportComplete }: E
           </div>
 
           {/* Preview */}
-          <div>
-            <label className="block text-sm font-medium text-glass-secondary mb-2.5">
+          <div className="flex-1 flex flex-col min-h-0">
+            <label className="block text-sm font-medium text-glass-secondary mb-2">
               Preview
             </label>
-            <div className="glass-medium rounded-lg p-3 h-32 overflow-y-auto">
-              <pre className="text-xs text-glass-muted whitespace-pre-wrap font-mono">
+            <div className="glass-medium rounded-xl p-4 h-48 overflow-y-auto border border-white/10">
+              <pre className="text-xs text-glass-muted whitespace-pre-wrap font-mono leading-relaxed">
                 {preview || 'No data to preview'}
               </pre>
             </div>
-            <p className="text-xs text-glass-muted mt-1.5">
-              {data.length} tab{data.length !== 1 ? 's' : ''} • {selectedFormatOption?.label.toUpperCase()} • Download as File
+            <p className="text-xs text-glass-muted mt-2 text-center">
+              {data.length} tab{data.length !== 1 ? 's' : ''} • {selectedFormatOption?.label.toUpperCase()}
             </p>
           </div>
         </div>
 
         {/* Footer */}
-        <div className="flex gap-3 p-5 border-t border-white/10">
+        <div className="flex gap-3 p-4 border-t border-white/10 bg-black/20 shrink-0">
           <button
             onClick={onClose}
             disabled={isExporting}
-            className="flex-1 px-4 py-2.5 rounded-lg glass-heavy border border-white/10 text-glass-secondary
+            className="flex-1 px-4 py-3 rounded-xl glass-heavy border border-white/10 text-glass-secondary
                      hover:border-white/20 hover:text-glass-primary transition-all disabled:opacity-50
-                     font-medium text-sm glass-hover"
+                     font-medium glass-hover"
           >
             Cancel
           </button>
           <button
             onClick={handleExport}
             disabled={isExporting || data.length === 0}
-            className="flex-1 px-4 py-2.5 rounded-lg glass-teal border border-teal-400/30 text-white
+            className="flex-1 px-4 py-3 rounded-xl glass-teal border border-teal-400/30 text-white
                      hover:scale-[1.02] transition-all disabled:opacity-50 disabled:cursor-not-allowed
-                     font-medium text-sm flex items-center justify-center gap-2"
+                     font-medium flex items-center justify-center gap-2 shadow-lg shadow-teal-900/20"
           >
             {isExporting ? (
               <>
-                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 Exporting...
               </>
             ) : (
               <>
-                <Download className="w-4 h-4" />
-                Export
+                <Download className="w-5 h-5" />
+                Download
               </>
             )}
           </button>
