@@ -27,8 +27,7 @@ export function ExtractionErrorAlert({ errors, onDismiss }: ExtractionErrorAlert
 
       {hasYouTubeErrors && (
         <p className="text-xs text-glass-muted mb-2">
-          Backend server may be down. Ensure subtitle service is running at{' '}
-          <code className="mx-1 px-1 bg-white/10 rounded">ytdp-nodejs.onrender.com</code>
+          Backend server may be down. Ensure the subtitle service is configured correctly.
         </p>
       )}
 

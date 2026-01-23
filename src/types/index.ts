@@ -29,18 +29,24 @@ export interface ExtractionResult {
   url: string;
 }
 
-export interface SubtitlesMetadata {
-  id: string;
-  title: string;
-  channel: string;
+// FastAPI text response format
+export interface FastApiSubtitleResponse {
+  video_id: string;
+  language: string;
+  text: string;
+  metadata: {
+    video_id: string;
+    title: string;
+    duration?: number;
+    duration_formatted?: string;
+    channel?: string;
+  };
 }
 
-export interface SubtitlesResponse {
-  success: boolean;
-  metadata: SubtitlesMetadata;
-  subtitles: string[];
-  count: number;
-  error?: string;
+// FastAPI error response format
+export interface FastApiErrorResponse {
+  error: string;
+  message: string;
   detail?: string;
 }
 
