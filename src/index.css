@@ -27,7 +27,7 @@
   /* Higher Contrast Text Colors */
   --text-primary: rgba(255, 255, 255, 0.98);
   --text-secondary: rgba(255, 255, 255, 0.8);
-  --text-muted: rgba(255, 255, 255, 0.6);
+  --text-muted: rgba(255, 255, 255, 0.75);
   --text-disabled: rgba(255, 255, 255, 0.3);
   
   /* Subtle Accent Colors */
@@ -167,4 +167,20 @@ html {
 /* Prevent text selection on interactive elements */
 .select-none {
   user-select: none;
+}
+
+/* Truncate from start - keeps file extension visible */
+.truncate-start {
+  direction: rtl;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* Reset text direction for the input content */
+.truncate-start::-webkit-input-placeholder {
+  direction: ltr;
+}
+.truncate-start::placeholder {
+  direction: ltr;
 }
