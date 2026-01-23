@@ -27,7 +27,7 @@
   /* Higher Contrast Text Colors */
   --text-primary: rgba(255, 255, 255, 0.98);
   --text-secondary: rgba(255, 255, 255, 0.8);
-  --text-muted: rgba(255, 255, 255, 0.75);
+  --text-muted: rgba(255, 255, 255, 0.85);
   --text-disabled: rgba(255, 255, 255, 0.3);
   
   /* Subtle Accent Colors */
