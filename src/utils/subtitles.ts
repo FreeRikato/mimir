@@ -1,4 +1,4 @@
-import type { SubtitlesResponse } from '../types';
+import type { FastApiSubtitleResponse, FastApiErrorResponse } from '../types';
 import { SubtitleError } from '../types';
 import { isYouTubeUrl, normalizeYouTubeUrl } from './youtube';
 
@@ -64,9 +64,12 @@ async function setCachedSubtitle(videoId: string, data: { title: string; text: s
 }
 
 export function getSubtitlesApiUrl(youtubeUrl: string): string {
-  const baseUrl = SUBTITLES_BASE_URL || 'https://ytdp-nodejs.onrender.com';
-  const apiEndpoint = `${baseUrl}/api/subtitles`;
-  return `${apiEndpoint}?url=${youtubeUrl}`;
+  const baseUrl = SUBTITLES_BASE_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '');
+  if (!baseUrl) {
+    throw new Error('SUBTITLES_BASE_URL environment variable not set');
+  }
+  // Use format=text to get plain text response
+  return `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=text`;
 }
 
 function createTimeoutController(timeoutMs: number): AbortController {
@@ -103,7 +106,7 @@ async function fetchWithTimeout(url: string, timeoutMs = REQUEST_TIMEOUT_MS, ext
       );
     }
     throw new SubtitleError(
-      'Network request failed',
+      `Network request failed. Is the backend server running at http://127.0.0.1:8000?`,
       'NETWORK_ERROR',
       err instanceof Error ? err : undefined,
       url
@@ -174,25 +177,6 @@ async function fetchWithRetry<T>(
   throw lastError;
 }
 
-function cleanSubtitleText(subtitles: string[]): string {
-  const cleanedLines: string[] = [];
-  const seenLines = new Set<string>();
-
-  for (const line of subtitles) {
-    const noTimestamp = line.replace(/<\d{2}:\d{2}:\d{2}\.\d{3}>/g, '');
-    const noTags = noTimestamp.replace(/<\/?[a-zA-Z0-9_]+>/g, '');
-    const noMetadata = noTags.replace(/^(Kind:|Language:).*/gm, '');
-    const trimmed = noMetadata.trim();
-
-    if (trimmed && !seenLines.has(trimmed)) {
-      seenLines.add(trimmed);
-      cleanedLines.push(trimmed);
-    }
-  }
-
-  return cleanedLines.join('\n');
-}
-
 export async function fetchYoutubeSubtitles(
   youtubeUrl: string,
   options: {
@@ -222,6 +206,33 @@ export async function fetchYoutubeSubtitles(
       const response = await fetchWithTimeout(apiUrl, timeoutMs, signal);
 
       if (!response.ok) {
+        // Try to parse error response
+        let errorBody: FastApiErrorResponse | null = null;
+        try {
+          errorBody = await response.json();
+        } catch {
+          // Ignore JSON parse errors
+        }
+
+        const errorType = errorBody?.error;
+        const errorMessage = errorBody?.message || errorBody?.detail || `API request failed: ${response.status}`;
+
+        // Map status codes to error codes
+        if (response.status === 400 || errorType === 'validation_error') {
+          throw new SubtitleError(errorMessage, 'INVALID_URL', undefined, youtubeUrl);
+        }
+        if (response.status === 401 || errorType === 'unauthorized') {
+          throw new SubtitleError('Unauthorized request', 'API_ERROR', undefined, youtubeUrl);
+        }
+        if (response.status === 403 || errorType === 'forbidden') {
+          throw new SubtitleError('Access forbidden', 'API_ERROR', undefined, youtubeUrl);
+        }
+        if (response.status === 404 || errorType === 'download_failed' || errorType === 'not_found') {
+          throw new SubtitleError(errorMessage, 'NO_SUBTITLES', undefined, youtubeUrl);
+        }
+        if (response.status === 429 || errorType === 'rate_limit_exceeded') {
+          throw new SubtitleError('Rate limit exceeded', 'SERVER_ERROR', undefined, youtubeUrl);
+        }
         if (response.status >= 500) {
           throw new SubtitleError(
             `Backend server error: ${response.status}`,
@@ -231,19 +242,10 @@ export async function fetchYoutubeSubtitles(
           );
         }
 
-        let apiMessage: string | undefined;
-        try {
-          const errorBody = await response.json();
-          apiMessage = errorBody.error || errorBody.message || errorBody.detail;
-        } catch {
-          // Ignore JSON parse errors
-        }
-
-        const message = apiMessage ? `API request failed: ${response.status} - ${apiMessage}` : `API request failed: ${response.status}`;
-        throw new SubtitleError(message, 'API_ERROR', undefined, youtubeUrl);
+        throw new SubtitleError(errorMessage, 'API_ERROR', undefined, youtubeUrl);
       }
 
-      let data: SubtitlesResponse;
+      let data: FastApiSubtitleResponse;
       try {
         data = await response.json();
       } catch (err) {
@@ -255,19 +257,11 @@ export async function fetchYoutubeSubtitles(
         );
       }
 
-      if (!data.success) {
-        const errorMessage = data.error || data.detail || 'Subtitles API returned unsuccessful response';
-        if (errorMessage.includes('no subtitles') || errorMessage.includes('caption')) {
-          throw new SubtitleError(errorMessage, 'NO_SUBTITLES', undefined, youtubeUrl);
-        }
-        throw new SubtitleError(errorMessage, 'API_ERROR', undefined, youtubeUrl);
-      }
-
-      if (!data.subtitles || data.subtitles.length === 0) {
+      if (!data.text || data.text.trim().length === 0) {
         throw new SubtitleError('No subtitles found for this video', 'NO_SUBTITLES', undefined, youtubeUrl);
       }
 
-      const text = cleanSubtitleText(data.subtitles);
+      const text = data.text;
       const title = data.metadata.title;
 
       const result = { title, text };
