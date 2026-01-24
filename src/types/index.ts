@@ -1,159 +1,154 @@
 export interface ChromeTab {
-  id: number;
-  windowId: number;
-  index: number;
-  title: string;
-  url: string;
-  favIconUrl?: string;
-  highlighted?: boolean;
-  active?: boolean;
+	id: number;
+	windowId: number;
+	index: number;
+	title: string;
+	url: string;
+	favIconUrl?: string;
+	highlighted?: boolean;
+	active?: boolean;
 }
 
 export interface DomainGroup {
-  domain: string;
-  tabs: ChromeTab[];
-  favicon?: string;
+	domain: string;
+	tabs: ChromeTab[];
+	favicon?: string;
 }
 
 export interface ExtractedData {
-  id: number;
-  title: string;
-  url: string;
-  timestamp: string;
-  text: string;
+	id: number;
+	title: string;
+	url: string;
+	timestamp: string;
+	text: string;
 }
 
 export interface ExtractionResult {
-  text: string;
-  title: string;
-  url: string;
+	text: string;
+	title: string;
+	url: string;
 }
 
 // Subtitle entry from JSON API response
 export interface SubtitleEntry {
-  start: string;
-  end: string;
-  text: string;
+	start: string;
+	end: string;
+	text: string;
 }
 
 // FastAPI JSON response format (format=json)
 export interface FastApiSubtitleResponse {
-  video_id: string;
-  language: string;
-  subtitle_count: number;
-  subtitles: SubtitleEntry[];
-  metadata: {
-    video_id: string;
-    title: string;
-    duration?: number;
-    duration_formatted?: string;
-    channel?: string;
-    description?: string;
-    thumbnail?: string;
-    webpage_url?: string;
-    extractor?: string;
-  };
+	video_id: string;
+	language: string;
+	subtitle_count: number;
+	subtitles: SubtitleEntry[];
+	metadata: {
+		video_id: string;
+		title: string;
+		duration?: number;
+		duration_formatted?: string;
+		channel?: string;
+		description?: string;
+		thumbnail?: string;
+		webpage_url?: string;
+		extractor?: string;
+	};
 }
 
 // FastAPI error response format
 export interface FastApiErrorResponse {
-  error: string;
-  message: string;
-  detail?: string;
+	error: string;
+	message: string;
+	detail?: string;
 }
 
 export type SubtitleErrorCode =
-  | 'INVALID_URL'
-  | 'NETWORK_ERROR'
-  | 'TIMEOUT'
-  | 'SERVER_ERROR'
-  | 'API_ERROR'
-  | 'PARSE_ERROR'
-  | 'NO_SUBTITLES'
-  | 'RETRY_EXHAUSTED';
+	| "INVALID_URL"
+	| "NETWORK_ERROR"
+	| "TIMEOUT"
+	| "SERVER_ERROR"
+	| "API_ERROR"
+	| "PARSE_ERROR"
+	| "NO_SUBTITLES"
+	| "RETRY_EXHAUSTED";
 
 export class SubtitleError extends Error {
-  public readonly code: SubtitleErrorCode;
-  public readonly originalError?: Error;
-  public readonly url?: string;
+	public readonly code: SubtitleErrorCode;
+	public readonly originalError?: Error;
+	public readonly url?: string;
 
-  constructor(
-    message: string,
-    code: SubtitleErrorCode,
-    originalError?: Error,
-    url?: string
-  ) {
-    super(message);
-    this.name = 'SubtitleError';
-    this.code = code;
-    this.originalError = originalError;
-    this.url = url;
-  }
+	constructor(message: string, code: SubtitleErrorCode, originalError?: Error, url?: string) {
+		super(message);
+		this.name = "SubtitleError";
+		this.code = code;
+		this.originalError = originalError;
+		this.url = url;
+	}
 }
 
 export interface ExtractionErrorInfo {
-  tabId: number;
-  url: string;
-  title: string;
-  errorCode: SubtitleErrorCode;
-  userMessage: string;
+	tabId: number;
+	url: string;
+	title: string;
+	errorCode: SubtitleErrorCode;
+	userMessage: string;
 }
 
-export type ExtractionStatus = 'idle' | 'extracting' | 'success' | 'partial' | 'error';
+export type ExtractionStatus = "idle" | "extracting" | "success" | "partial" | "error";
 
 // Export & Storage types
-export type ExportFormat = 'json' | 'markdown' | 'text' | 'csv' | 'html';
-export type ExportAction = 'clipboard' | 'file';
+export type ExportFormat = "json" | "markdown" | "text" | "csv" | "html";
+export type ExportAction = "clipboard" | "file";
 
 export interface ExportOptions {
-  format: ExportFormat;
-  action: ExportAction;
-  filename?: string;
+	format: ExportFormat;
+	action: ExportAction;
+	filename?: string;
 }
 
 export interface HistoryEntry {
-  id: string;
-  timestamp: number;
-  format: ExportFormat;
-  exportType: ExportAction;
-  tabCount: number;
-  domains: string[];
-  data: ExtractedData[];
-  filename?: string;
-  dataSize: number;
+	id: string;
+	timestamp: number;
+	format: ExportFormat;
+	exportType: ExportAction;
+	tabCount: number;
+	domains: string[];
+	data: ExtractedData[];
+	filename?: string;
+	dataSize: number;
 }
 
 export interface SearchQuery {
-  keywords?: string;
-  dateFrom?: number;
-  dateTo?: number;
-  domains?: string[];
+	keywords?: string;
+	dateFrom?: number;
+	dateTo?: number;
+	domains?: string[];
 }
 
 export interface SearchFilters {
-  keywords: string;
-  dateRange: { start: Date | null; end: Date | null };
-  domains: string[];
+	keywords: string;
+	dateRange: { start: Date | null; end: Date | null };
+	domains: string[];
 }
 
 export interface ExtractionProgress {
-  total: number;
-  completed: number;
-  failed: number;
-  currentTabId: number | null;
-  currentTabTitle: string | null;
-  startTime: number;
-  isCancelled: boolean;
+	total: number;
+	completed: number;
+	failed: number;
+	currentTabId: number | null;
+	currentTabTitle: string | null;
+	startTime: number;
+	isCancelled: boolean;
 }
 
 export interface ProgressUpdate {
-  completed: number;
-  failed: number;
-  total: number;
-  currentTab: {
-    id: number;
-    title: string;
-  } | null;
+	completed: number;
+	failed: number;
+	total: number;
+	currentTab: {
+		id: number;
+		title: string;
+	} | null;
 }
 
 export type ProgressCallback = (progress: ProgressUpdate) => void;
