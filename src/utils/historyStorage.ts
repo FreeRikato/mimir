@@ -211,12 +211,14 @@ export async function searchHistory(query: SearchQuery): Promise<HistoryEntry[]>
 		}
 
 		// Filter by date range
-		if (query.dateFrom !== undefined) {
-			entries = entries.filter((entry) => entry.timestamp >= query.dateFrom);
+		const dateFrom = query.dateFrom;
+		if (dateFrom !== undefined) {
+			entries = entries.filter((entry) => entry.timestamp >= dateFrom);
 		}
 
-		if (query.dateTo !== undefined) {
-			entries = entries.filter((entry) => entry.timestamp <= query.dateTo);
+		const dateTo = query.dateTo;
+		if (dateTo !== undefined) {
+			entries = entries.filter((entry) => entry.timestamp <= dateTo);
 		}
 
 		// Filter by domains
