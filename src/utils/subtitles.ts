@@ -64,21 +64,30 @@ async function setCachedSubtitle(videoId: string, data: { title: string; text: s
 }
 
 export function getSubtitlesApiUrl(youtubeUrl: string): string {
-  const baseUrl = SUBTITLES_BASE_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '');
+  let baseUrl = SUBTITLES_BASE_URL || (import.meta.env.DEV ? '127.0.0.1:8000' : '');
   if (!baseUrl) {
     throw new Error('SUBTITLES_BASE_URL environment variable not set');
   }
+  // Add protocol if missing (Fetch API requires a proper URL scheme)
+  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+    baseUrl = 'http://' + baseUrl;
+  }
+  // Normalize localhost to 127.0.0.1 (more reliable)
+  baseUrl = baseUrl.replace('localhost', '127.0.0.1');
   // Use format=text to get plain text response
-  return `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=text`;
+  const url = `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=text`;
+  console.log('Subtitles API URL:', url);
+  return url;
 }
 
 // Fetch through background service worker (more reliable in Manifest V3)
 async function fetchFromBackground(url: string, timeoutMs = REQUEST_TIMEOUT_MS, externalSignal?: AbortSignal): Promise<Response> {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
-    console.log('SidePanel: Sending fetch request to background worker');
+    console.log('SidePanel: Starting fetchFromBackground for URL:', url);
 
     const timeoutId = setTimeout(() => {
+      console.error('SidePanel: Request timed out after', timeoutMs, 'ms');
       reject(new SubtitleError(
         `Request timed out after ${timeoutMs}ms. Is the backend server running at http://127.0.0.1:8000?`,
         'TIMEOUT',
@@ -95,13 +104,15 @@ async function fetchFromBackground(url: string, timeoutMs = REQUEST_TIMEOUT_MS, 
     }
 
     try {
+      console.log('SidePanel: Sending FETCH_SUBTITLES message to background worker...');
       chrome.runtime.sendMessage({ type: 'FETCH_SUBTITLES', url }, (response) => {
         clearTimeout(timeoutId);
         const elapsed = Date.now() - startTime;
-        console.log(`SidePanel: Response received in ${elapsed}ms`);
+        console.log(`SidePanel: Response received from background in ${elapsed}ms`);
+        console.log('SidePanel: Response:', response);
 
         if (chrome.runtime.lastError) {
-          console.error('SidePanel: chrome.runtime.lastError:', chrome.runtime.lastError);
+          console.error('SidePanel: chrome.runtime.lastError detected:', chrome.runtime.lastError.message);
           // Try direct fetch as fallback
           console.log('SidePanel: Trying direct fetch as fallback...');
           directFetchWithTimeout(url, timeoutMs).then(resolve).catch(reject);
@@ -146,15 +157,22 @@ async function fetchFromBackground(url: string, timeoutMs = REQUEST_TIMEOUT_MS, 
 
 // Direct fetch fallback
 async function directFetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  console.log('SidePanel: Starting directFetchWithTimeout for URL:', url);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutId = setTimeout(() => {
+    console.error('SidePanel: Direct fetch timed out after', timeoutMs, 'ms');
+    controller.abort();
+  }, timeoutMs);
 
   try {
+    console.log('SidePanel: Making direct fetch request...');
     const response = await fetch(url, { signal: controller.signal });
     clearTimeout(timeoutId);
+    console.log('SidePanel: Direct fetch completed with status:', response.status);
     return response;
   } catch (err) {
     clearTimeout(timeoutId);
+    console.error('SidePanel: Direct fetch failed:', err);
     if (err instanceof Error && err.name === 'AbortError') {
       throw new SubtitleError(
         `Request timed out after ${timeoutMs}ms`,
