@@ -1,4 +1,4 @@
-import type { FastApiSubtitleResponse, FastApiErrorResponse } from '../types';
+import type { FastApiSubtitleResponse, FastApiErrorResponse, SubtitleEntry } from '../types';
 import { SubtitleError } from '../types';
 import { isYouTubeUrl, normalizeYouTubeUrl } from './youtube';
 
@@ -15,6 +15,8 @@ const SUBTITLE_CACHE_TTL = 3600000; // 1 hour
 interface SubtitleCacheEntry {
   title: string;
   text: string;
+  subtitles: SubtitleEntry[];
+  subtitleCount: number;
   timestamp: number;
 }
 
@@ -28,7 +30,7 @@ async function extractVideoId(youtubeUrl: string): Promise<string> {
   return videoId;
 }
 
-async function getCachedSubtitle(videoId: string): Promise<{ title: string; text: string } | null> {
+async function getCachedSubtitle(videoId: string): Promise<{ title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number } | null> {
   try {
     const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}`;
     const cached = await chrome.storage.local.get([cacheKey]);
@@ -41,19 +43,21 @@ async function getCachedSubtitle(videoId: string): Promise<{ title: string; text
       return null;
     }
 
-    return { title: entry.title, text: entry.text };
+    return { title: entry.title, text: entry.text, subtitles: entry.subtitles, subtitleCount: entry.subtitleCount };
   } catch (err) {
     console.warn('Failed to load subtitle from cache:', err);
     return null;
   }
 }
 
-async function setCachedSubtitle(videoId: string, data: { title: string; text: string }): Promise<void> {
+async function setCachedSubtitle(videoId: string, data: { title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number }): Promise<void> {
   try {
     const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}`;
     const entry: SubtitleCacheEntry = {
       title: data.title,
       text: data.text,
+      subtitles: data.subtitles,
+      subtitleCount: data.subtitleCount,
       timestamp: Date.now(),
     };
 
@@ -74,8 +78,8 @@ export function getSubtitlesApiUrl(youtubeUrl: string): string {
   }
   // Normalize localhost to 127.0.0.1 (more reliable)
   baseUrl = baseUrl.replace('localhost', '127.0.0.1');
-  // Use format=text to get plain text response
-  const url = `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=text`;
+  // Use format=json to get structured subtitle data
+  const url = `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=json`;
   console.log('Subtitles API URL:', url);
   return url;
 }
@@ -266,7 +270,7 @@ export async function fetchYoutubeSubtitles(
     onRetry?: (attempt: number, error: SubtitleError) => void;
     signal?: AbortSignal;
   } = {}
-): Promise<{ title: string; text: string }> {
+): Promise<{ title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number }> {
   const { timeoutMs = REQUEST_TIMEOUT_MS, maxRetries = RETRY_MAX_ATTEMPTS, onRetry, signal } = options;
 
   if (!isYouTubeUrl(youtubeUrl)) {
@@ -338,14 +342,17 @@ export async function fetchYoutubeSubtitles(
         );
       }
 
-      if (!data.text || data.text.trim().length === 0) {
+      if (!data.subtitles || !Array.isArray(data.subtitles) || data.subtitles.length === 0) {
         throw new SubtitleError('No subtitles found for this video', 'NO_SUBTITLES', undefined, youtubeUrl);
       }
 
-      const text = data.text;
+      // Join subtitle texts with newlines
+      const text = data.subtitles.map((s) => s.text).join('\n');
       const title = data.metadata.title;
+      const subtitleCount = data.subtitle_count;
+      const subtitles = data.subtitles;
 
-      const result = { title, text };
+      const result = { title, text, subtitles, subtitleCount };
 
       await setCachedSubtitle(videoId, result);
 
