@@ -1,11 +1,11 @@
-import type { ExtractedData } from '../types';
+import type { ExtractedData } from "../types";
 
-export type ExportFormat = 'json' | 'markdown' | 'text' | 'csv' | 'html';
+export type ExportFormat = "json" | "markdown" | "text" | "csv" | "html";
 
 export interface ExportOptions {
-  format: ExportFormat;
-  action: 'clipboard' | 'file';
-  filename?: string;
+	format: ExportFormat;
+	action: "clipboard" | "file";
+	filename?: string;
 }
 
 /**
@@ -13,149 +13,149 @@ export interface ExportOptions {
  * HTML IDs must start with a letter and can only contain letters, digits, hyphens, and underscores
  */
 function createHtmlId(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/[^a-z0-9]/gi, '-') // Replace non-alphanumeric chars with hyphens
-    .replace(/^-+/g, '') // Remove leading hyphens
-    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
-    .replace(/^-/g, 'x') // Ensure it doesn't start with a hyphen (prepend 'x' if needed)
-    .substring(0, 50); // Limit length
+	return input
+		.toLowerCase()
+		.replace(/[^a-z0-9]/gi, "-") // Replace non-alphanumeric chars with hyphens
+		.replace(/^-+/g, "") // Remove leading hyphens
+		.replace(/-+/g, "-") // Replace multiple hyphens with single hyphen
+		.replace(/^-/g, "x") // Ensure it doesn't start with a hyphen (prepend 'x' if needed)
+		.substring(0, 50); // Limit length
 }
 
 /**
  * Main export function that formats data based on the specified format
  */
 export function formatExport(data: ExtractedData[], format: ExportFormat): string {
-  switch (format) {
-    case 'json':
-      return formatAsJSON(data);
-    case 'markdown':
-      return formatAsMarkdown(data);
-    case 'text':
-      return formatAsPlainText(data);
-    case 'csv':
-      return formatAsCSV(data);
-    case 'html':
-      return formatAsHTML(data);
-    default:
-      return formatAsJSON(data);
-  }
+	switch (format) {
+		case "json":
+			return formatAsJSON(data);
+		case "markdown":
+			return formatAsMarkdown(data);
+		case "text":
+			return formatAsPlainText(data);
+		case "csv":
+			return formatAsCSV(data);
+		case "html":
+			return formatAsHTML(data);
+		default:
+			return formatAsJSON(data);
+	}
 }
 
 /**
  * Format as JSON (existing format)
  */
 export function formatAsJSON(data: ExtractedData[]): string {
-  return JSON.stringify(data, null, 2);
+	return JSON.stringify(data, null, 2);
 }
 
 /**
  * Format as Markdown with headers by domain and links
  */
 export function formatAsMarkdown(data: ExtractedData[]): string {
-  if (data.length === 0) return '# No Content\n\nNo tabs were extracted.';
+	if (data.length === 0) return "# No Content\n\nNo tabs were extracted.";
 
-  // Group by domain
-  const groupedByDomain = new Map<string, ExtractedData[]>();
-  for (const item of data) {
-    try {
-      const url = new URL(item.url);
-      const domain = url.hostname;
-      if (!groupedByDomain.has(domain)) {
-        groupedByDomain.set(domain, []);
-      }
-      groupedByDomain.get(domain)?.push(item);
-    } catch {
-      // Invalid URL, add to "Other" group
-      if (!groupedByDomain.has('Other')) {
-        groupedByDomain.set('Other', []);
-      }
-      groupedByDomain.get('Other')?.push(item);
-    }
-  }
+	// Group by domain
+	const groupedByDomain = new Map<string, ExtractedData[]>();
+	for (const item of data) {
+		try {
+			const url = new URL(item.url);
+			const domain = url.hostname;
+			if (!groupedByDomain.has(domain)) {
+				groupedByDomain.set(domain, []);
+			}
+			groupedByDomain.get(domain)?.push(item);
+		} catch {
+			// Invalid URL, add to "Other" group
+			if (!groupedByDomain.has("Other")) {
+				groupedByDomain.set("Other", []);
+			}
+			groupedByDomain.get("Other")?.push(item);
+		}
+	}
 
-  const timestamp = new Date().toLocaleString();
-  let markdown = `# Extracted Content\n\n**Extracted:** ${timestamp}\n**Sources:** ${data.length} tab${data.length !== 1 ? 's' : ''}\n\n`;
+	const timestamp = new Date().toLocaleString();
+	let markdown = `# Extracted Content\n\n**Extracted:** ${timestamp}\n**Sources:** ${data.length} tab${data.length !== 1 ? "s" : ""}\n\n`;
 
-  // Table of contents
-  markdown += '## Table of Contents\n\n';
-  const domains = Array.from(groupedByDomain.keys()).sort();
-  for (const domain of domains) {
-    const items = groupedByDomain.get(domain) || [];
-    markdown += `- [${domain}](#${domain.toLowerCase().replace(/\./g, '-')}) (${items.length})\n`;
-  }
-  markdown += '\n---\n\n';
+	// Table of contents
+	markdown += "## Table of Contents\n\n";
+	const domains = Array.from(groupedByDomain.keys()).sort();
+	for (const domain of domains) {
+		const items = groupedByDomain.get(domain) || [];
+		markdown += `- [${domain}](#${domain.toLowerCase().replace(/\./g, "-")}) (${items.length})\n`;
+	}
+	markdown += "\n---\n\n";
 
-  // Content by domain
-  for (const domain of domains) {
-    const items = groupedByDomain.get(domain) || [];
-    markdown += `## ${domain}\n\n`;
+	// Content by domain
+	for (const domain of domains) {
+		const items = groupedByDomain.get(domain) || [];
+		markdown += `## ${domain}\n\n`;
 
-    for (const item of items) {
-      markdown += `### [${escapeMarkdown(item.title)}](${item.url})\n\n`;
-      markdown += `${item.text}\n\n`;
-      markdown += `*Extracted: ${new Date(item.timestamp).toLocaleString()}*\n\n`;
-      markdown += '---\n\n';
-    }
-  }
+		for (const item of items) {
+			markdown += `### [${escapeMarkdown(item.title)}](${item.url})\n\n`;
+			markdown += `${item.text}\n\n`;
+			markdown += `*Extracted: ${new Date(item.timestamp).toLocaleString()}*\n\n`;
+			markdown += "---\n\n";
+		}
+	}
 
-  return markdown;
+	return markdown;
 }
 
 /**
  * Format as plain text without formatting
  */
 export function formatAsPlainText(data: ExtractedData[]): string {
-  if (data.length === 0) return 'No content extracted.';
+	if (data.length === 0) return "No content extracted.";
 
-  const timestamp = new Date().toLocaleString();
-  let text = `Extracted Content\n${'='.repeat(50)}\nExtracted: ${timestamp}\nSources: ${data.length} tab(s)\n${'='.repeat(50)}\n\n`;
+	const timestamp = new Date().toLocaleString();
+	let text = `Extracted Content\n${"=".repeat(50)}\nExtracted: ${timestamp}\nSources: ${data.length} tab(s)\n${"=".repeat(50)}\n\n`;
 
-  for (const item of data) {
-    text += `${item.title}\n`;
-    text += `${'-'.repeat(30)}\n`;
-    text += `URL: ${item.url}\n`;
-    text += `Extracted: ${new Date(item.timestamp).toLocaleString()}\n\n`;
-    text += `${item.text}\n\n`;
-    text += `${'='.repeat(50)}\n\n`;
-  }
+	for (const item of data) {
+		text += `${item.title}\n`;
+		text += `${"-".repeat(30)}\n`;
+		text += `URL: ${item.url}\n`;
+		text += `Extracted: ${new Date(item.timestamp).toLocaleString()}\n\n`;
+		text += `${item.text}\n\n`;
+		text += `${"=".repeat(50)}\n\n`;
+	}
 
-  return text;
+	return text;
 }
 
 /**
  * Format as CSV with columns: Domain, Title, URL, Content, Date
  */
 export function formatAsCSV(data: ExtractedData[]): string {
-  if (data.length === 0) return 'Domain,Title,URL,Content,Date\n';
+	if (data.length === 0) return "Domain,Title,URL,Content,Date\n";
 
-  let csv = 'Domain,Title,URL,Content,Date\n';
+	let csv = "Domain,Title,URL,Content,Date\n";
 
-  for (const item of data) {
-    let domain = 'Unknown';
-    try {
-      domain = new URL(item.url).hostname;
-    } catch {
-      // Use default domain
-    }
+	for (const item of data) {
+		let domain = "Unknown";
+		try {
+			domain = new URL(item.url).hostname;
+		} catch {
+			// Use default domain
+		}
 
-    const title = escapeCSVField(item.title);
-    const url = escapeCSVField(item.url);
-    const content = escapeCSVField(item.text);
-    const date = new Date(item.timestamp).toISOString();
+		const title = escapeCSVField(item.title);
+		const url = escapeCSVField(item.url);
+		const content = escapeCSVField(item.text);
+		const date = new Date(item.timestamp).toISOString();
 
-    csv += `${escapeCSVField(domain)},${title},${url},${content},${date}\n`;
-  }
+		csv += `${escapeCSVField(domain)},${title},${url},${content},${date}\n`;
+	}
 
-  return csv;
+	return csv;
 }
 
 /**
  * Format as HTML with styled document
  */
 export function formatAsHTML(data: ExtractedData[]): string {
-  if (data.length === 0) {
-    return `<!DOCTYPE html>
+	if (data.length === 0) {
+		return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -183,30 +183,30 @@ export function formatAsHTML(data: ExtractedData[]): string {
   </div>
 </body>
 </html>`;
-  }
+	}
 
-  // Group by domain
-  const groupedByDomain = new Map<string, ExtractedData[]>();
-  for (const item of data) {
-    try {
-      const url = new URL(item.url);
-      const domain = url.hostname;
-      if (!groupedByDomain.has(domain)) {
-        groupedByDomain.set(domain, []);
-      }
-      groupedByDomain.get(domain)?.push(item);
-    } catch {
-      if (!groupedByDomain.has('Other')) {
-        groupedByDomain.set('Other', []);
-      }
-      groupedByDomain.get('Other')?.push(item);
-    }
-  }
+	// Group by domain
+	const groupedByDomain = new Map<string, ExtractedData[]>();
+	for (const item of data) {
+		try {
+			const url = new URL(item.url);
+			const domain = url.hostname;
+			if (!groupedByDomain.has(domain)) {
+				groupedByDomain.set(domain, []);
+			}
+			groupedByDomain.get(domain)?.push(item);
+		} catch {
+			if (!groupedByDomain.has("Other")) {
+				groupedByDomain.set("Other", []);
+			}
+			groupedByDomain.get("Other")?.push(item);
+		}
+	}
 
-  const timestamp = new Date().toLocaleString();
-  const domains = Array.from(groupedByDomain.keys()).sort();
+	const timestamp = new Date().toLocaleString();
+	const domains = Array.from(groupedByDomain.keys()).sort();
 
-  let html = `<!DOCTYPE html>
+	let html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -241,7 +241,7 @@ export function formatAsHTML(data: ExtractedData[]): string {
   <h1>Extracted Content</h1>
   <div class="meta">
     <p><strong>Extracted:</strong> ${timestamp}</p>
-    <p><strong>Sources:</strong> ${data.length} tab${data.length !== 1 ? 's' : ''}</p>
+    <p><strong>Sources:</strong> ${data.length} tab${data.length !== 1 ? "s" : ""}</p>
   </div>
 
   <div class="toc">
@@ -249,112 +249,108 @@ export function formatAsHTML(data: ExtractedData[]): string {
     <ul class="toc-list">
 `;
 
-  // Table of contents
-  for (const domain of domains) {
-    const items = groupedByDomain.get(domain) || [];
-    const anchorId = createHtmlId(domain);
-    html += `      <li class="toc-item"><a href="#${anchorId}">${escapeHTML(domain)}</a> (${items.length})</li>\n`;
-  }
+	// Table of contents
+	for (const domain of domains) {
+		const items = groupedByDomain.get(domain) || [];
+		const anchorId = createHtmlId(domain);
+		html += `      <li class="toc-item"><a href="#${anchorId}">${escapeHTML(domain)}</a> (${items.length})</li>\n`;
+	}
 
-  html += '    </ul>\n  </div>\n';
+	html += "    </ul>\n  </div>\n";
 
-  // Content by domain
-  for (const domain of domains) {
-    const items = groupedByDomain.get(domain) || [];
-    const anchorId = createHtmlId(domain);
+	// Content by domain
+	for (const domain of domains) {
+		const items = groupedByDomain.get(domain) || [];
+		const anchorId = createHtmlId(domain);
 
-    html += `  <div class="domain-header" id="${anchorId}">${escapeHTML(domain)}</div>\n`;
+		html += `  <div class="domain-header" id="${anchorId}">${escapeHTML(domain)}</div>\n`;
 
-    for (const item of items) {
-      html += `  <div class="entry">
+		for (const item of items) {
+			html += `  <div class="entry">
     <div class="entry-title"><a href="${escapeHTMLAttribute(item.url)}" target="_blank">${escapeHTML(item.title)}</a></div>
     <div class="entry-url">${escapeHTML(item.url)}</div>
     <div class="entry-content">${escapeHTML(item.text)}</div>
     <div class="entry-date">Extracted: ${new Date(item.timestamp).toLocaleString()}</div>
   </div>\n`;
-    }
-  }
+		}
+	}
 
-  html += '</body>\n</html>';
+	html += "</body>\n</html>";
 
-  return html;
+	return html;
 }
 
 /**
  * Download content as a file
  */
 export function downloadAsFile(content: string, filename: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
+	const blob = new Blob([content], { type: mimeType });
+	const url = URL.createObjectURL(blob);
 
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = filename;
+	document.body.appendChild(a);
+	a.click();
 
-  // Cleanup
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+	// Cleanup
+	document.body.removeChild(a);
+	URL.revokeObjectURL(url);
 }
 
 /**
  * Generate a filename for the export
  */
 export function generateFilename(format: ExportFormat, timestamp: Date = new Date()): string {
-  const dateStr = timestamp
-    .toISOString()
-    .replace(/[:.]/g, '-')
-    .replace('T', '_')
-    .slice(0, 19);
+	const dateStr = timestamp.toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
 
-  const extensions: Record<ExportFormat, string> = {
-    json: 'json',
-    markdown: 'md',
-    text: 'txt',
-    csv: 'csv',
-    html: 'html',
-  };
+	const extensions: Record<ExportFormat, string> = {
+		json: "json",
+		markdown: "md",
+		text: "txt",
+		csv: "csv",
+		html: "html",
+	};
 
-  return `mimir-export_${dateStr}.${extensions[format]}`;
+	return `mimir-export_${dateStr}.${extensions[format]}`;
 }
 
 /**
  * Get MIME type for the format
  */
 export function getMimeType(format: ExportFormat): string {
-  const mimeTypes: Record<ExportFormat, string> = {
-    json: 'application/json',
-    markdown: 'text/markdown',
-    text: 'text/plain',
-    csv: 'text/csv',
-    html: 'text/html',
-  };
+	const mimeTypes: Record<ExportFormat, string> = {
+		json: "application/json",
+		markdown: "text/markdown",
+		text: "text/plain",
+		csv: "text/csv",
+		html: "text/html",
+	};
 
-  return mimeTypes[format];
+	return mimeTypes[format];
 }
 
 // Helper functions
 
 function escapeCSVField(value: string): string {
-  // If the value contains quotes, commas, or newlines, wrap in quotes and escape internal quotes
-  if (value.includes('"') || value.includes(',') || value.includes('\n') || value.includes('\r')) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
+	// If the value contains quotes, commas, or newlines, wrap in quotes and escape internal quotes
+	if (value.includes('"') || value.includes(",") || value.includes("\n") || value.includes("\r")) {
+		return `"${value.replace(/"/g, '""')}"`;
+	}
+	return value;
 }
 
 function escapeHTML(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+	const div = document.createElement("div");
+	div.textContent = text;
+	return div.innerHTML;
 }
 
 function escapeHTMLAttribute(text: string): string {
-  return escapeHTML(text).replace(/"/g, '&quot;');
+	return escapeHTML(text).replace(/"/g, "&quot;");
 }
 
 function escapeMarkdown(text: string): string {
-  // Escape special markdown characters
-  return text.replace(/([_*[\]()\\`~#+\-.!|])/g, '\\$1');
+	// Escape special markdown characters
+	return text.replace(/([_*[\]()\\`~#+\-.!|])/g, "\\$1");
 }
