@@ -72,32 +72,90 @@ export function getSubtitlesApiUrl(youtubeUrl: string): string {
   return `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=text`;
 }
 
-function createTimeoutController(timeoutMs: number): AbortController {
+// Fetch through background service worker (more reliable in Manifest V3)
+async function fetchFromBackground(url: string, timeoutMs = REQUEST_TIMEOUT_MS, externalSignal?: AbortSignal): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    console.log('SidePanel: Sending fetch request to background worker');
+
+    const timeoutId = setTimeout(() => {
+      reject(new SubtitleError(
+        `Request timed out after ${timeoutMs}ms. Is the backend server running at http://127.0.0.1:8000?`,
+        'TIMEOUT',
+        undefined,
+        url
+      ));
+    }, timeoutMs);
+
+    // Check for external cancellation
+    if (externalSignal?.aborted) {
+      clearTimeout(timeoutId);
+      reject(new SubtitleError('Operation cancelled', 'NETWORK_ERROR', undefined, url));
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage({ type: 'FETCH_SUBTITLES', url }, (response) => {
+        clearTimeout(timeoutId);
+        const elapsed = Date.now() - startTime;
+        console.log(`SidePanel: Response received in ${elapsed}ms`);
+
+        if (chrome.runtime.lastError) {
+          console.error('SidePanel: chrome.runtime.lastError:', chrome.runtime.lastError);
+          // Try direct fetch as fallback
+          console.log('SidePanel: Trying direct fetch as fallback...');
+          directFetchWithTimeout(url, timeoutMs).then(resolve).catch(reject);
+          return;
+        }
+
+        if (!response) {
+          console.log('SidePanel: No response from background, trying direct fetch...');
+          directFetchWithTimeout(url, timeoutMs).then(resolve).catch(reject);
+          return;
+        }
+
+        if (!response.success) {
+          console.log('SidePanel: Background returned error:', response.error);
+          // Try direct fetch as fallback on error
+          console.log('SidePanel: Trying direct fetch as fallback...');
+          directFetchWithTimeout(url, timeoutMs).then(resolve).catch(reject);
+          return;
+        }
+
+        console.log('SidePanel: Successfully received subtitle data');
+        // Create a mock Response object for compatibility
+        const mockResponse = {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () => Promise.resolve(response.data),
+          text: () => Promise.resolve(JSON.stringify(response.data)),
+        } as unknown as Response;
+
+        resolve(mockResponse);
+      });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      console.error('SidePanel: Exception sending message:', err);
+      // Try direct fetch as fallback
+      console.log('SidePanel: Exception, trying direct fetch...');
+      directFetchWithTimeout(url, timeoutMs).then(resolve).catch(reject);
+    }
+  });
+}
+
+// Direct fetch fallback
+async function directFetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  controller.signal.addEventListener('abort', () => clearTimeout(timeoutId));
-
-  return controller;
-}
-
-async function fetchWithTimeout(url: string, timeoutMs = REQUEST_TIMEOUT_MS, externalSignal?: AbortSignal): Promise<Response> {
-  const controller = createTimeoutController(timeoutMs);
-
-  // Combine timeout signal with external abort signal if provided
-  const signal = externalSignal
-    ? AbortSignal.any([controller.signal, externalSignal])
-    : controller.signal;
-
   try {
-    const response = await fetch(url, { signal });
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
     return response;
   } catch (err) {
+    clearTimeout(timeoutId);
     if (err instanceof Error && err.name === 'AbortError') {
-      // Check if it was external cancellation or timeout
-      if (externalSignal?.aborted) {
-        throw new SubtitleError('Operation cancelled', 'NETWORK_ERROR', undefined, url);
-      }
       throw new SubtitleError(
         `Request timed out after ${timeoutMs}ms`,
         'TIMEOUT',
@@ -106,12 +164,17 @@ async function fetchWithTimeout(url: string, timeoutMs = REQUEST_TIMEOUT_MS, ext
       );
     }
     throw new SubtitleError(
-      `Network request failed. Is the backend server running at http://127.0.0.1:8000?`,
+      `Network request failed: ${err instanceof Error ? err.message : 'Unknown error'}. Is the backend server running at http://127.0.0.1:8000?`,
       'NETWORK_ERROR',
       err instanceof Error ? err : undefined,
       url
     );
   }
+}
+
+async function fetchWithTimeout(url: string, timeoutMs = REQUEST_TIMEOUT_MS, externalSignal?: AbortSignal): Promise<Response> {
+  // Use background worker for Chrome extension context
+  return fetchFromBackground(url, timeoutMs, externalSignal);
 }
 
 function getRetryDelay(attempt: number, baseDelay = RETRY_BASE_DELAY_MS, maxDelay = RETRY_MAX_DELAY_MS): number {
