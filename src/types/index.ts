@@ -29,17 +29,29 @@ export interface ExtractionResult {
   url: string;
 }
 
-// FastAPI text response format
+// Subtitle entry from JSON API response
+export interface SubtitleEntry {
+  start: string;
+  end: string;
+  text: string;
+}
+
+// FastAPI JSON response format (format=json)
 export interface FastApiSubtitleResponse {
   video_id: string;
   language: string;
-  text: string;
+  subtitle_count: number;
+  subtitles: SubtitleEntry[];
   metadata: {
     video_id: string;
     title: string;
     duration?: number;
     duration_formatted?: string;
     channel?: string;
+    description?: string;
+    thumbnail?: string;
+    webpage_url?: string;
+    extractor?: string;
   };
 }
 
