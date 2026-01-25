@@ -6,6 +6,7 @@ import { ExtractionErrorAlert } from "./components/ExtractionErrorAlert";
 import { ExtractionProgressDisplay } from "./components/ExtractionProgress";
 import { Footer } from "./components/Footer";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { SettingsModal } from "./components/SettingsModal";
 import { useCloseTabsSetting } from "./hooks/useCloseTabsSetting";
 import { useHighlightedTabs } from "./hooks/useHighlightedTabs";
 import { useHistory } from "./hooks/useHistory";
@@ -18,12 +19,14 @@ import type {
 	ExtractionProgress,
 	ExtractionResult,
 	ExtractionStatus,
+	SubtitleExtractionFormat,
 } from "./types";
 import { SubtitleError } from "./types";
 import { getCachedContent, setCachedContent } from "./utils/cache";
 import { downloadAsFile, formatExport, getMimeType } from "./utils/exporters";
 import { getPageHTML } from "./utils/scripting";
 import { fetchYoutubeSubtitles } from "./utils/subtitles";
+import { getSubtitleFormatSetting, setSubtitleFormatSetting, type SubtitleFormat } from "./utils/settings";
 import { closeTabsSafely, getTabsToRight } from "./utils/tabHelpers";
 import { isYouTubeUrl } from "./utils/youtube";
 
@@ -45,6 +48,7 @@ function useAutoHideProgress(
 async function extractTab(
 	id: number,
 	signal?: AbortSignal,
+	subtitleFormat?: SubtitleExtractionFormat,
 ): Promise<{ result: ExtractedData | null; error: ExtractionErrorInfo | null }> {
 	// Check for cancellation at start
 	if (signal?.aborted) {
@@ -69,6 +73,7 @@ async function extractTab(
 		if (isYouTubeUrl(tabUrl)) {
 			try {
 				const { title, text } = await fetchYoutubeSubtitles(tabUrl, {
+					format: subtitleFormat,
 					onRetry: (attempt, err) => {
 						console.warn(`Retry ${attempt} for ${tabUrl}:`, err.message);
 					},
@@ -175,6 +180,7 @@ function createExtractionError(id: number, tab: chrome.tabs.Tab | null, err: unk
 function extractTabsConcurrent(
 	tabIds: number[],
 	signal: AbortSignal | undefined,
+	subtitleFormat: SubtitleExtractionFormat | undefined,
 	onProgress?: (update: {
 		completed: number;
 		failed: number;
@@ -233,7 +239,7 @@ function extractTabsConcurrent(
 				const timeoutSignal = AbortSignal.timeout(SINGLE_TAB_TIMEOUT);
 				const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
-				const { result, error } = await extractTab(tabId, combinedSignal);
+				const { result, error } = await extractTab(tabId, combinedSignal, subtitleFormat);
 
 				// Check if extraction timed out or was cancelled
 				if (!result && !error) {
@@ -332,6 +338,10 @@ export function SidePanelApp() {
 	// Export & History state
 	const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(false);
 
+	// Settings modal state
+	const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+	const [subtitleFormat, setSubtitleFormat] = useState<SubtitleFormat>("json");
+
 	// Progress tracking state
 	const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
 	const [abortController, setAbortController] = useState<AbortController | null>(null);
@@ -379,6 +389,23 @@ export function SidePanelApp() {
 		};
 	}, []);
 
+	// Effect to load subtitle format from storage
+	useEffect(() => {
+		const loadSubtitleFormat = async () => {
+			const format = await getSubtitleFormatSetting();
+			setSubtitleFormat(format);
+		};
+		loadSubtitleFormat();
+	}, []);
+
+	// Effect to save subtitle format to storage when it changes
+	useEffect(() => {
+		const saveSubtitleFormat = async () => {
+			await setSubtitleFormatSetting(subtitleFormat);
+		};
+		saveSubtitleFormat();
+	}, [subtitleFormat]);
+
 	const handleExtract = useCallback(async () => {
 		const selectedIds = getSelectedIdsAsArray();
 		if (selectedIds.length === 0) return;
@@ -403,7 +430,7 @@ export function SidePanelApp() {
 		});
 
 		try {
-			const { results, errors, cancelled } = await extractTabsConcurrent(selectedIds, controller.signal, (update) => {
+			const { results, errors, cancelled } = await extractTabsConcurrent(selectedIds, controller.signal, "json", (update) => {
 				setExtractionProgress((prev) =>
 					prev
 						? {
@@ -516,7 +543,7 @@ export function SidePanelApp() {
 		});
 
 		try {
-			const { results, errors, cancelled } = await extractTabsConcurrent(tabIds, controller.signal, (update) => {
+			const { results, errors, cancelled } = await extractTabsConcurrent(tabIds, controller.signal, "json", (update) => {
 				setToRightExtractionProgress((prev) =>
 					prev
 						? {
@@ -613,7 +640,7 @@ export function SidePanelApp() {
 		});
 
 		try {
-			const { results, errors, cancelled } = await extractTabsConcurrent(tabIds, controller.signal, (update) => {
+			const { results, errors, cancelled } = await extractTabsConcurrent(tabIds, controller.signal, "json", (update) => {
 				setHighlightedExtractionProgress((prev) =>
 					prev
 						? {
@@ -692,6 +719,15 @@ export function SidePanelApp() {
 
 	const handleCloseHistory = useCallback(() => {
 		setIsHistoryPanelOpen(false);
+	}, []);
+
+	// Settings handlers
+	const handleOpenSettings = useCallback(() => {
+		setIsSettingsModalOpen(true);
+	}, []);
+
+	const handleCloseSettings = useCallback(() => {
+		setIsSettingsModalOpen(false);
 	}, []);
 
 	const handleExportFromFormatModal = useCallback(
@@ -806,9 +842,7 @@ export function SidePanelApp() {
 				isExtractingHighlighted={isExtractingHighlighted}
 				highlightedExtractionStatus={highlightedExtractionStatus}
 				highlightedExtractionErrors={highlightedExtractionErrors}
-				onOpenHistory={handleOpenHistory}
-				closeTabsEnabled={closeTabsEnabled}
-				onToggleCloseTabs={toggleCloseTabs}
+				onOpenSettings={handleOpenSettings}
 			/>
 
 			{/* History Panel */}
@@ -827,6 +861,17 @@ export function SidePanelApp() {
 				onClearSearch={history.clearSearch}
 				onExportFromFormatModal={handleExportFromFormatModal}
 				onCopy={handleCopy}
+			/>
+
+			{/* Settings Modal */}
+			<SettingsModal
+				isOpen={isSettingsModalOpen}
+				onClose={handleCloseSettings}
+				subtitleFormat={subtitleFormat}
+				onFormatChange={setSubtitleFormat}
+				closeTabsEnabled={closeTabsEnabled}
+				onToggleCloseTabs={toggleCloseTabs}
+				onOpenHistory={handleOpenHistory}
 			/>
 		</div>
 	);

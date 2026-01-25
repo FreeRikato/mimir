@@ -1,4 +1,4 @@
-import type { FastApiErrorResponse, FastApiSubtitleResponse, SubtitleEntry } from "../types";
+import type { FastApiErrorResponse, FastApiSubtitleResponse, FastApiTextResponse, SubtitleEntry, SubtitleExtractionFormat, SubtitleFetchOptions } from "../types";
 import { SubtitleError } from "../types";
 import { isYouTubeUrl, normalizeYouTubeUrl } from "./youtube";
 
@@ -17,7 +17,69 @@ interface SubtitleCacheEntry {
 	text: string;
 	subtitles: SubtitleEntry[];
 	subtitleCount: number;
+	format: SubtitleExtractionFormat;
 	timestamp: number;
+}
+
+/**
+ * Parse WebVTT format into SubtitleEntry array
+ * WebVTT format example:
+ * WEBVTT
+ *
+ * 00:00:00.000 --> 00:00:02.500
+ * First subtitle line
+ *
+ * 00:00:02.500 --> 00:00:05.000
+ * Second subtitle line
+ */
+function parseVtt(vttContent: string): { subtitles: SubtitleEntry[]; text: string } {
+	const lines = vttContent.split("\n");
+	const subtitles: SubtitleEntry[] = [];
+	const textLines: string[] = [];
+
+	let i = 0;
+	// Skip header and empty lines until we find the first timestamp
+	while (i < lines.length) {
+		const line = lines[i].trim();
+		if (line.includes("-->") && line.match(/\d{2}:\d{2}:\d{2}/)) {
+			break;
+		}
+		i++;
+	}
+
+	while (i < lines.length) {
+		const line = lines[i].trim();
+
+		// Look for timestamp line (contains -->)
+		if (line.includes("-->")) {
+			const timeMatch = line.match(/(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})/);
+			if (timeMatch) {
+				const start = timeMatch[1];
+				const end = timeMatch[2];
+
+				// Collect text lines for this subtitle
+				i++;
+				const subtitleTextLines: string[] = [];
+				while (i < lines.length && lines[i].trim() !== "" && !lines[i].includes("-->")) {
+					const textLine = lines[i].trim();
+					if (textLine && !textLine.match(/NOTE|STYLE/)) {
+						subtitleTextLines.push(textLine);
+					}
+					i++;
+				}
+
+				const text = subtitleTextLines.join(" ");
+				if (text) {
+					subtitles.push({ start, end, text });
+					textLines.push(text);
+				}
+				continue;
+			}
+		}
+		i++;
+	}
+
+	return { subtitles, text: textLines.join("\n") };
 }
 
 async function extractVideoId(youtubeUrl: string): Promise<string> {
@@ -32,9 +94,10 @@ async function extractVideoId(youtubeUrl: string): Promise<string> {
 
 async function getCachedSubtitle(
 	videoId: string,
+	format: SubtitleExtractionFormat,
 ): Promise<{ title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number } | null> {
 	try {
-		const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}`;
+		const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}_${format}`;
 		const cached = await chrome.storage.local.get([cacheKey]);
 		const entry = cached[cacheKey] as SubtitleCacheEntry | undefined;
 
@@ -54,15 +117,17 @@ async function getCachedSubtitle(
 
 async function setCachedSubtitle(
 	videoId: string,
+	format: SubtitleExtractionFormat,
 	data: { title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number },
 ): Promise<void> {
 	try {
-		const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}`;
+		const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}_${format}`;
 		const entry: SubtitleCacheEntry = {
 			title: data.title,
 			text: data.text,
 			subtitles: data.subtitles,
 			subtitleCount: data.subtitleCount,
+			format,
 			timestamp: Date.now(),
 		};
 
@@ -72,7 +137,7 @@ async function setCachedSubtitle(
 	}
 }
 
-export function getSubtitlesApiUrl(youtubeUrl: string): string {
+export function getSubtitlesApiUrl(youtubeUrl: string, format: SubtitleExtractionFormat = "json"): string {
 	let baseUrl = SUBTITLES_BASE_URL || (import.meta.env.DEV ? "127.0.0.1:8000" : "");
 	if (!baseUrl) {
 		throw new Error("SUBTITLES_BASE_URL environment variable not set");
@@ -83,8 +148,8 @@ export function getSubtitlesApiUrl(youtubeUrl: string): string {
 	}
 	// Normalize localhost to 127.0.0.1 (more reliable)
 	baseUrl = baseUrl.replace("localhost", "127.0.0.1");
-	// Use format=json to get structured subtitle data
-	const url = `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=json`;
+	// Use format parameter to get subtitle data in requested format
+	const url = `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=${format}`;
 	console.log("Subtitles API URL:", url);
 	return url;
 }
@@ -92,12 +157,13 @@ export function getSubtitlesApiUrl(youtubeUrl: string): string {
 // Fetch through background service worker (more reliable in Manifest V3)
 async function fetchFromBackground(
 	url: string,
+	format: SubtitleExtractionFormat,
 	timeoutMs = REQUEST_TIMEOUT_MS,
 	externalSignal?: AbortSignal,
 ): Promise<Response> {
 	return new Promise((resolve, reject) => {
 		const startTime = Date.now();
-		console.log("SidePanel: Starting fetchFromBackground for URL:", url);
+		console.log("SidePanel: Starting fetchFromBackground for URL:", url, "format:", format);
 
 		const timeoutId = setTimeout(() => {
 			console.error("SidePanel: Request timed out after", timeoutMs, "ms");
@@ -120,7 +186,7 @@ async function fetchFromBackground(
 
 		try {
 			console.log("SidePanel: Sending FETCH_SUBTITLES message to background worker...");
-			chrome.runtime.sendMessage({ type: "FETCH_SUBTITLES", url }, (response) => {
+			chrome.runtime.sendMessage({ type: "FETCH_SUBTITLES", url, format }, (response) => {
 				clearTimeout(timeoutId);
 				const elapsed = Date.now() - startTime;
 				console.log(`SidePanel: Response received from background in ${elapsed}ms`);
@@ -130,13 +196,13 @@ async function fetchFromBackground(
 					console.error("SidePanel: chrome.runtime.lastError detected:", chrome.runtime.lastError.message);
 					// Try direct fetch as fallback
 					console.log("SidePanel: Trying direct fetch as fallback...");
-					directFetchWithTimeout(url, timeoutMs).then(resolve).catch(reject);
+					directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
 					return;
 				}
 
 				if (!response) {
 					console.log("SidePanel: No response from background, trying direct fetch...");
-					directFetchWithTimeout(url, timeoutMs).then(resolve).catch(reject);
+					directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
 					return;
 				}
 
@@ -144,18 +210,19 @@ async function fetchFromBackground(
 					console.log("SidePanel: Background returned error:", response.error);
 					// Try direct fetch as fallback on error
 					console.log("SidePanel: Trying direct fetch as fallback...");
-					directFetchWithTimeout(url, timeoutMs).then(resolve).catch(reject);
+					directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
 					return;
 				}
 
 				console.log("SidePanel: Successfully received subtitle data");
 				// Create a mock Response object for compatibility
+				// For VTT format, response.data is raw text; for JSON/text formats, it's parsed JSON
 				const mockResponse = {
 					ok: true,
 					status: 200,
 					statusText: "OK",
 					json: () => Promise.resolve(response.data),
-					text: () => Promise.resolve(JSON.stringify(response.data)),
+					text: () => Promise.resolve(typeof response.data === "string" ? response.data : JSON.stringify(response.data)),
 				} as unknown as Response;
 
 				resolve(mockResponse);
@@ -165,14 +232,14 @@ async function fetchFromBackground(
 			console.error("SidePanel: Exception sending message:", err);
 			// Try direct fetch as fallback
 			console.log("SidePanel: Exception, trying direct fetch...");
-			directFetchWithTimeout(url, timeoutMs).then(resolve).catch(reject);
+			directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
 		}
 	});
 }
 
 // Direct fetch fallback
-async function directFetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
-	console.log("SidePanel: Starting directFetchWithTimeout for URL:", url);
+async function directFetchWithTimeout(url: string, format: SubtitleExtractionFormat, timeoutMs: number): Promise<Response> {
+	console.log("SidePanel: Starting directFetchWithTimeout for URL:", url, "format:", format);
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => {
 		console.error("SidePanel: Direct fetch timed out after", timeoutMs, "ms");
@@ -202,11 +269,12 @@ async function directFetchWithTimeout(url: string, timeoutMs: number): Promise<R
 
 async function fetchWithTimeout(
 	url: string,
+	format: SubtitleExtractionFormat,
 	timeoutMs = REQUEST_TIMEOUT_MS,
 	externalSignal?: AbortSignal,
 ): Promise<Response> {
 	// Use background worker for Chrome extension context
-	return fetchFromBackground(url, timeoutMs, externalSignal);
+	return fetchFromBackground(url, format, timeoutMs, externalSignal);
 }
 
 function getRetryDelay(attempt: number, baseDelay = RETRY_BASE_DELAY_MS, maxDelay = RETRY_MAX_DELAY_MS): number {
@@ -281,14 +349,9 @@ async function fetchWithRetry<T>(
 
 export async function fetchYoutubeSubtitles(
 	youtubeUrl: string,
-	options: {
-		timeoutMs?: number;
-		maxRetries?: number;
-		onRetry?: (attempt: number, error: SubtitleError) => void;
-		signal?: AbortSignal;
-	} = {},
+	options: SubtitleFetchOptions = {},
 ): Promise<{ title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number }> {
-	const { timeoutMs = REQUEST_TIMEOUT_MS, maxRetries = RETRY_MAX_ATTEMPTS, onRetry, signal } = options;
+	const { format = "json", timeoutMs = REQUEST_TIMEOUT_MS, maxRetries = RETRY_MAX_ATTEMPTS, onRetry, signal } = options;
 
 	if (!isYouTubeUrl(youtubeUrl)) {
 		throw new SubtitleError("Invalid YouTube URL", "INVALID_URL", undefined, youtubeUrl);
@@ -296,7 +359,7 @@ export async function fetchYoutubeSubtitles(
 
 	const videoId = await extractVideoId(youtubeUrl);
 
-	const cached = await getCachedSubtitle(videoId);
+	const cached = await getCachedSubtitle(videoId, format);
 	if (cached) {
 		return cached;
 	}
@@ -304,8 +367,8 @@ export async function fetchYoutubeSubtitles(
 	return fetchWithRetry(
 		async () => {
 			const normalizedUrl = normalizeYouTubeUrl(youtubeUrl);
-			const apiUrl = getSubtitlesApiUrl(normalizedUrl);
-			const response = await fetchWithTimeout(apiUrl, timeoutMs, signal);
+			const apiUrl = getSubtitlesApiUrl(normalizedUrl, format);
+			const response = await fetchWithTimeout(apiUrl, format, timeoutMs, signal);
 
 			if (!response.ok) {
 				// Try to parse error response
@@ -342,31 +405,82 @@ export async function fetchYoutubeSubtitles(
 				throw new SubtitleError(errorMessage, "API_ERROR", undefined, youtubeUrl);
 			}
 
-			let data: FastApiSubtitleResponse;
-			try {
-				data = await response.json();
-			} catch (err) {
-				throw new SubtitleError(
-					"Failed to parse API response",
-					"PARSE_ERROR",
-					err instanceof Error ? err : undefined,
-					youtubeUrl,
-				);
+			let result: { title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number };
+
+			// Handle different response formats
+			if (format === "json") {
+				let data: FastApiSubtitleResponse;
+				try {
+					data = await response.json();
+				} catch (err) {
+					throw new SubtitleError(
+						"Failed to parse API response",
+						"PARSE_ERROR",
+						err instanceof Error ? err : undefined,
+						youtubeUrl,
+					);
+				}
+
+				if (!data.subtitles || !Array.isArray(data.subtitles) || data.subtitles.length === 0) {
+					throw new SubtitleError("No subtitles found for this video", "NO_SUBTITLES", undefined, youtubeUrl);
+				}
+
+				// Join subtitle texts with newlines
+				const text = data.subtitles.map((s) => s.text).join("\n");
+				const title = data.metadata.title;
+				const subtitleCount = data.subtitle_count;
+				const subtitles = data.subtitles;
+
+				result = { title, text, subtitles, subtitleCount };
+			} else if (format === "vtt") {
+				// VTT format returns raw WebVTT text
+				const vttContent = await response.text();
+				if (!vttContent || vttContent.trim().length === 0) {
+					throw new SubtitleError("No subtitles found for this video", "NO_SUBTITLES", undefined, youtubeUrl);
+				}
+
+				const parsed = parseVtt(vttContent);
+				if (parsed.subtitles.length === 0) {
+					throw new SubtitleError("No subtitles found for this video", "NO_SUBTITLES", undefined, youtubeUrl);
+				}
+
+				// Extract title from VTT if available, otherwise use video ID
+				const titleMatch = vttContent.match(/Title:\s*(.+)/i);
+				const title = titleMatch ? titleMatch[1].trim() : `YouTube Video ${videoId}`;
+
+				result = {
+					title,
+					text: parsed.text,
+					subtitles: parsed.subtitles,
+					subtitleCount: parsed.subtitles.length,
+				};
+			} else {
+				// text format
+				let data: FastApiTextResponse;
+				try {
+					data = await response.json();
+				} catch (err) {
+					throw new SubtitleError(
+						"Failed to parse API response",
+						"PARSE_ERROR",
+						err instanceof Error ? err : undefined,
+						youtubeUrl,
+					);
+				}
+
+				if (!data.text || data.text.trim().length === 0) {
+					throw new SubtitleError("No subtitles found for this video", "NO_SUBTITLES", undefined, youtubeUrl);
+				}
+
+				result = {
+					title: data.title || `YouTube Video ${videoId}`,
+					text: data.text,
+					subtitles: [], // No structured data in text format
+					subtitleCount: 1,
+				};
 			}
 
-			if (!data.subtitles || !Array.isArray(data.subtitles) || data.subtitles.length === 0) {
-				throw new SubtitleError("No subtitles found for this video", "NO_SUBTITLES", undefined, youtubeUrl);
-			}
-
-			// Join subtitle texts with newlines
-			const text = data.subtitles.map((s) => s.text).join("\n");
-			const title = data.metadata.title;
-			const subtitleCount = data.subtitle_count;
-			const subtitles = data.subtitles;
-
-			const result = { title, text, subtitles, subtitleCount };
-
-			await setCachedSubtitle(videoId, result);
+			await setCachedSubtitle(videoId, format, result);
 
 			return result;
 		},

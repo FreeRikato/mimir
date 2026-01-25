@@ -5,11 +5,10 @@ import {
 	CheckCircle,
 	Copy,
 	Highlighter,
-	History,
 	Loader2,
 	RefreshCw,
+	Settings,
 	X,
-	XCircle,
 } from "lucide-react";
 import type { ExtractionErrorInfo, ExtractionStatus } from "../types";
 
@@ -34,11 +33,8 @@ interface FooterProps {
 	isExtractingHighlighted: boolean;
 	highlightedExtractionStatus: ExtractionStatus;
 	highlightedExtractionErrors: ExtractionErrorInfo[];
-	// History props
-	onOpenHistory: () => void;
-	// Close tabs toggle props
-	closeTabsEnabled: boolean;
-	onToggleCloseTabs: () => void;
+	// Settings props
+	onOpenSettings: () => void;
 }
 
 export function Footer({
@@ -62,11 +58,8 @@ export function Footer({
 	isExtractingHighlighted,
 	highlightedExtractionStatus,
 	highlightedExtractionErrors: _highlightedExtractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
-	// History props
-	onOpenHistory,
-	// Close tabs toggle props
-	closeTabsEnabled,
-	onToggleCloseTabs,
+	// Settings props
+	onOpenSettings,
 }: FooterProps) {
 	const isExtractDisabled = selectedCount === 0 || isExtracting || isExtractingToRight || isExtractingHighlighted;
 	const showCancel = selectedCount > 0 && !isExtracting && !isExtractingToRight && !isExtractingHighlighted;
@@ -194,37 +187,13 @@ export function Footer({
 					)}
 				</button>
 
-				{/* Close Tabs Toggle Button */}
-				<div className="relative">
-					<button
-						onClick={onToggleCloseTabs}
-						className={`
-              flex-shrink-0 w-11 h-11 rounded-lg
-              flex items-center justify-center
-              transition-all duration-300
-              ${
-								closeTabsEnabled
-									? "glass-teal border-teal-400/30 text-teal-300"
-									: "glass-heavy text-glass-muted hover:text-glass-secondary"
-							}
-              glass-hover glass-focus
-            `}
-						title={`Close tabs after extraction: ${closeTabsEnabled ? "ON" : "OFF"}`}
-					>
-						<XCircle className="w-5 h-5" />
-					</button>
-					{closeTabsEnabled && (
-						<span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-teal-400 rounded-full border border-white/20" />
-					)}
-				</div>
-
-				{/* History Button */}
+				{/* Settings Button */}
 				<button
-					onClick={onOpenHistory}
+					onClick={onOpenSettings}
 					className="flex-shrink-0 w-11 h-11 rounded-lg glass-hover glass-focus text-glass-secondary hover:text-glass-primary flex items-center justify-center"
-					title="Extraction history"
+					title="Settings"
 				>
-					<History className="w-5 h-5" />
+					<Settings className="w-5 h-5" />
 				</button>
 			</div>
 		</div>
