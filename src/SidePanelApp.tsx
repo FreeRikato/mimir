@@ -25,8 +25,8 @@ import { SubtitleError } from "./types";
 import { getCachedContent, setCachedContent } from "./utils/cache";
 import { downloadAsFile, formatExport, getMimeType } from "./utils/exporters";
 import { getPageHTML } from "./utils/scripting";
+import { getSubtitleFormatSetting, type SubtitleFormat, setSubtitleFormatSetting } from "./utils/settings";
 import { fetchYoutubeSubtitles } from "./utils/subtitles";
-import { getSubtitleFormatSetting, setSubtitleFormatSetting, type SubtitleFormat } from "./utils/settings";
 import { closeTabsSafely, getTabsToRight } from "./utils/tabHelpers";
 import { isYouTubeUrl } from "./utils/youtube";
 
@@ -430,19 +430,24 @@ export function SidePanelApp() {
 		});
 
 		try {
-			const { results, errors, cancelled } = await extractTabsConcurrent(selectedIds, controller.signal, "json", (update) => {
-				setExtractionProgress((prev) =>
-					prev
-						? {
-								...prev,
-								completed: update.completed,
-								failed: update.failed,
-								currentTabId: update.currentTab?.id ?? null,
-								currentTabTitle: update.currentTab?.title ?? null,
-							}
-						: null,
-				);
-			});
+			const { results, errors, cancelled } = await extractTabsConcurrent(
+				selectedIds,
+				controller.signal,
+				"json",
+				(update) => {
+					setExtractionProgress((prev) =>
+						prev
+							? {
+									...prev,
+									completed: update.completed,
+									failed: update.failed,
+									currentTabId: update.currentTab?.id ?? null,
+									currentTabTitle: update.currentTab?.title ?? null,
+								}
+							: null,
+					);
+				},
+			);
 
 			setExtractionErrors(errors);
 			const validResults = results;
@@ -543,19 +548,24 @@ export function SidePanelApp() {
 		});
 
 		try {
-			const { results, errors, cancelled } = await extractTabsConcurrent(tabIds, controller.signal, "json", (update) => {
-				setToRightExtractionProgress((prev) =>
-					prev
-						? {
-								...prev,
-								completed: update.completed,
-								failed: update.failed,
-								currentTabId: update.currentTab?.id ?? null,
-								currentTabTitle: update.currentTab?.title ?? null,
-							}
-						: null,
-				);
-			});
+			const { results, errors, cancelled } = await extractTabsConcurrent(
+				tabIds,
+				controller.signal,
+				"json",
+				(update) => {
+					setToRightExtractionProgress((prev) =>
+						prev
+							? {
+									...prev,
+									completed: update.completed,
+									failed: update.failed,
+									currentTabId: update.currentTab?.id ?? null,
+									currentTabTitle: update.currentTab?.title ?? null,
+								}
+							: null,
+					);
+				},
+			);
 
 			setToRightExtractionErrors(errors);
 			const validResults = results;
@@ -640,19 +650,24 @@ export function SidePanelApp() {
 		});
 
 		try {
-			const { results, errors, cancelled } = await extractTabsConcurrent(tabIds, controller.signal, "json", (update) => {
-				setHighlightedExtractionProgress((prev) =>
-					prev
-						? {
-								...prev,
-								completed: update.completed,
-								failed: update.failed,
-								currentTabId: update.currentTab?.id ?? null,
-								currentTabTitle: update.currentTab?.title ?? null,
-							}
-						: null,
-				);
-			});
+			const { results, errors, cancelled } = await extractTabsConcurrent(
+				tabIds,
+				controller.signal,
+				"json",
+				(update) => {
+					setHighlightedExtractionProgress((prev) =>
+						prev
+							? {
+									...prev,
+									completed: update.completed,
+									failed: update.failed,
+									currentTabId: update.currentTab?.id ?? null,
+									currentTabTitle: update.currentTab?.title ?? null,
+								}
+							: null,
+					);
+				},
+			);
 
 			setHighlightedExtractionErrors(errors);
 			const validResults = results;

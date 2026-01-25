@@ -1,4 +1,11 @@
-import type { FastApiErrorResponse, FastApiSubtitleResponse, FastApiTextResponse, SubtitleEntry, SubtitleExtractionFormat, SubtitleFetchOptions } from "../types";
+import type {
+	FastApiErrorResponse,
+	FastApiSubtitleResponse,
+	FastApiTextResponse,
+	SubtitleEntry,
+	SubtitleExtractionFormat,
+	SubtitleFetchOptions,
+} from "../types";
 import { SubtitleError } from "../types";
 import { isYouTubeUrl, normalizeYouTubeUrl } from "./youtube";
 
@@ -222,7 +229,8 @@ async function fetchFromBackground(
 					status: 200,
 					statusText: "OK",
 					json: () => Promise.resolve(response.data),
-					text: () => Promise.resolve(typeof response.data === "string" ? response.data : JSON.stringify(response.data)),
+					text: () =>
+						Promise.resolve(typeof response.data === "string" ? response.data : JSON.stringify(response.data)),
 				} as unknown as Response;
 
 				resolve(mockResponse);
@@ -238,7 +246,11 @@ async function fetchFromBackground(
 }
 
 // Direct fetch fallback
-async function directFetchWithTimeout(url: string, format: SubtitleExtractionFormat, timeoutMs: number): Promise<Response> {
+async function directFetchWithTimeout(
+	url: string,
+	format: SubtitleExtractionFormat,
+	timeoutMs: number,
+): Promise<Response> {
 	console.log("SidePanel: Starting directFetchWithTimeout for URL:", url, "format:", format);
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => {
