@@ -36,6 +36,18 @@ export interface SubtitleEntry {
 	text: string;
 }
 
+// Subtitle extraction formats
+export type SubtitleExtractionFormat = "json" | "vtt" | "text";
+
+// Subtitle fetch options
+export interface SubtitleFetchOptions {
+	format?: SubtitleExtractionFormat;
+	timeoutMs?: number;
+	maxRetries?: number;
+	onRetry?: (attempt: number, error: SubtitleError) => void;
+	signal?: AbortSignal;
+}
+
 // FastAPI JSON response format (format=json)
 export interface FastApiSubtitleResponse {
 	video_id: string;
@@ -53,6 +65,16 @@ export interface FastApiSubtitleResponse {
 		webpage_url?: string;
 		extractor?: string;
 	};
+}
+
+// FastAPI VTT response format (format=vtt)
+// Returns raw WebVTT text, not JSON
+
+// FastAPI text response format (format=text)
+export interface FastApiTextResponse {
+	video_id: string;
+	title: string;
+	text: string;
 }
 
 // FastAPI error response format
