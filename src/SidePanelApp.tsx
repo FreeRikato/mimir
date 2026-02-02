@@ -189,7 +189,7 @@ function extractTabsConcurrent(
 	}) => void,
 ): Promise<{ results: ExtractedData[]; errors: ExtractionErrorInfo[]; cancelled: boolean }> {
 	const CONCURRENCY_LIMIT = 3;
-	const SINGLE_TAB_TIMEOUT = 8000;
+	const NON_YOUTUBE_TAB_TIMEOUT = 15000; // 15 seconds for non-YouTube content
 
 	return new Promise((resolve) => {
 		const results: ExtractedData[] = [];
@@ -218,10 +218,13 @@ function extractTabsConcurrent(
 
 			let currentTabTitle = "Untitled";
 			let currentTabUrl = "unknown";
+			let isYoutube = false;
+
 			try {
 				const tab = await chrome.tabs.get(tabId);
 				currentTabTitle = tab.title || "Untitled";
 				currentTabUrl = tab.url || "unknown";
+				isYoutube = tab.url ? isYouTubeUrl(tab.url) : false;
 			} catch {
 				// Tab might be closed
 			}
@@ -235,21 +238,24 @@ function extractTabsConcurrent(
 			});
 
 			try {
-				// Create combined signal for timeout + user cancellation
-				const timeoutSignal = AbortSignal.timeout(SINGLE_TAB_TIMEOUT);
-				const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+				// Only apply timeout for non-YouTube content (YouTube has its own 100s API timeout)
+				let combinedSignal: AbortSignal | undefined = signal;
+				if (!isYoutube) {
+					const timeoutSignal = AbortSignal.timeout(NON_YOUTUBE_TAB_TIMEOUT);
+					combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+				}
 
 				const { result, error } = await extractTab(tabId, combinedSignal, subtitleFormat);
 
 				// Check if extraction timed out or was cancelled
 				if (!result && !error) {
-					if (timeoutSignal.aborted) {
+					if (combinedSignal?.aborted && !signal?.aborted) {
 						errors.push({
 							tabId,
 							url: currentTabUrl,
 							title: currentTabTitle,
 							errorCode: "TIMEOUT",
-							userMessage: "Extraction timed out after 8 seconds",
+							userMessage: "Extraction timed out after 15 seconds",
 						});
 						failed++;
 					}
