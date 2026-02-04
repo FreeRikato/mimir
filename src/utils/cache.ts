@@ -2,7 +2,6 @@ import type { DomainGroup } from "../types";
 
 export const CACHE_TTL = 30000;
 const CACHE_KEY = "mimir_cached_tabs";
-const QUOTA_LIMIT = 1048576;
 
 const CONTENT_CACHE_PREFIX = "content_";
 const CONTENT_CACHE_TTL = 300000; // 5 minutes
@@ -38,18 +37,24 @@ export async function setCachedTabs(data: DomainGroup[]): Promise<void> {
 			timestamp: Date.now(),
 		};
 
-		const totalBytes = await chrome.storage.session.getBytesInUse(null);
-		const estimatedSize = new Blob([JSON.stringify({ [CACHE_KEY]: entry })]).size;
-
-		if (totalBytes + estimatedSize >= QUOTA_LIMIT) {
-			console.warn("Storage quota would be exceeded, skipping cache write");
-			return;
+		// Try to write first, handle quota errors if they occur
+		// This is safer than checking quota first due to potential race conditions
+		try {
+			await chrome.storage.session.set({ [CACHE_KEY]: entry });
+		} catch (setErr) {
+			// If quota exceeded, try to clear old cache and retry
+			if (setErr instanceof Error && (setErr.message.includes("QUOTA") || setErr.message.includes("quota"))) {
+				console.warn("Storage quota exceeded, clearing old cache and retrying");
+				await removeExpiredCache();
+				// Retry after cleanup
+				await chrome.storage.session.set({ [CACHE_KEY]: entry });
+			} else {
+				throw setErr;
+			}
 		}
-
-		await chrome.storage.session.set({ [CACHE_KEY]: entry });
 	} catch (err) {
 		if (err instanceof Error && err.message.includes("QUOTA")) {
-			console.warn("Quota exceeded while writing cache:", err);
+			console.warn("Quota exceeded while writing cache (after retry):", err);
 		} else {
 			console.warn("Failed to write cache:", err);
 		}
@@ -113,18 +118,24 @@ export async function setCachedContent(
 			timestamp: Date.now(),
 		};
 
-		const totalBytes = await chrome.storage.session.getBytesInUse(null);
-		const estimatedSize = new Blob([JSON.stringify({ [cacheKey]: entry })]).size;
-
-		if (totalBytes + estimatedSize >= QUOTA_LIMIT) {
-			console.warn("Storage quota would be exceeded, skipping content cache write");
-			return;
+		// Try to write first, handle quota errors if they occur
+		// This is safer than checking quota first due to potential race conditions
+		try {
+			await chrome.storage.session.set({ [cacheKey]: entry });
+		} catch (setErr) {
+			// If quota exceeded, try to clear old cache and retry
+			if (setErr instanceof Error && (setErr.message.includes("QUOTA") || setErr.message.includes("quota"))) {
+				console.warn("Storage quota exceeded, clearing old content cache and retrying");
+				await removeExpiredContentCache();
+				// Retry after cleanup
+				await chrome.storage.session.set({ [cacheKey]: entry });
+			} else {
+				throw setErr;
+			}
 		}
-
-		await chrome.storage.session.set({ [cacheKey]: entry });
 	} catch (err) {
 		if (err instanceof Error && err.message.includes("QUOTA")) {
-			console.warn("Quota exceeded while writing content cache:", err);
+			console.warn("Quota exceeded while writing content cache (after retry):", err);
 		} else {
 			console.warn("Failed to write content cache:", err);
 		}
