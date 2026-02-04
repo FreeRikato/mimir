@@ -40,6 +40,11 @@ interface SubtitleCacheEntry {
  * Second subtitle line
  */
 function parseVtt(vttContent: string): { subtitles: SubtitleEntry[]; text: string } {
+	// Guard against null/undefined input
+	if (vttContent == null || typeof vttContent !== "string") {
+		return { subtitles: [], text: "" };
+	}
+
 	const lines = vttContent.split("\n");
 	const subtitles: SubtitleEntry[] = [];
 	const textLines: string[] = [];
@@ -47,40 +52,46 @@ function parseVtt(vttContent: string): { subtitles: SubtitleEntry[]; text: strin
 	let i = 0;
 	// Skip header and empty lines until we find the first timestamp
 	while (i < lines.length) {
-		const line = lines[i].trim();
-		if (line.includes("-->") && line.match(/\d{2}:\d{2}:\d{2}/)) {
+		const line = lines[i]?.trim(); // Use optional chaining for safety
+		if (line?.includes("-->") && line.match(/\d{2}:\d{2}:\d{2}/)) {
 			break;
 		}
 		i++;
 	}
 
 	while (i < lines.length) {
-		const line = lines[i].trim();
+		const line = lines[i]?.trim(); // Use optional chaining for safety
 
 		// Look for timestamp line (contains -->)
-		if (line.includes("-->")) {
+		if (line?.includes("-->")) {
 			const timeMatch = line.match(/(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})/);
 			if (timeMatch) {
 				const start = timeMatch[1];
 				const end = timeMatch[2];
 
-				// Collect text lines for this subtitle
-				i++;
-				const subtitleTextLines: string[] = [];
-				while (i < lines.length && lines[i].trim() !== "" && !lines[i].includes("-->")) {
-					const textLine = lines[i].trim();
-					if (textLine && !textLine.match(/NOTE|STYLE/)) {
-						subtitleTextLines.push(textLine);
-					}
+				// Validate timestamp format
+				if (start && end && start !== end) {
+					// Collect text lines for this subtitle
 					i++;
-				}
+					const subtitleTextLines: string[] = [];
+					while (i < lines.length) {
+						const textLine = lines[i]?.trim();
+						if (!textLine || textLine === "" || textLine.includes("-->")) {
+							break;
+						}
+						if (textLine && !textLine.match(/NOTE|STYLE/)) {
+							subtitleTextLines.push(textLine);
+						}
+						i++;
+					}
 
-				const text = subtitleTextLines.join(" ");
-				if (text) {
-					subtitles.push({ start, end, text });
-					textLines.push(text);
+					const text = subtitleTextLines.join(" ");
+					if (text) {
+						subtitles.push({ start, end, text });
+						textLines.push(text);
+					}
+					continue;
 				}
-				continue;
 			}
 		}
 		i++;
@@ -290,7 +301,15 @@ async function fetchWithTimeout(
 }
 
 function getRetryDelay(attempt: number, baseDelay = RETRY_BASE_DELAY_MS, maxDelay = RETRY_MAX_DELAY_MS): number {
-	const exponentialDelay = baseDelay * Math.pow(2, attempt);
+	// Cap attempt to prevent integer overflow with Math.pow(2, attempt)
+	const cappedAttempt = Math.min(attempt, 30); // 2^30 is about 1 billion, well within safe range
+	const exponentialDelay = baseDelay * Math.pow(2, cappedAttempt);
+
+	// Check for Infinity as an extra safety measure
+	if (!Number.isFinite(exponentialDelay)) {
+		return maxDelay;
+	}
+
 	const jitter = Math.random() * 0.3 * exponentialDelay;
 	return Math.min(exponentialDelay + jitter, maxDelay);
 }

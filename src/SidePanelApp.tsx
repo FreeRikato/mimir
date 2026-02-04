@@ -1,5 +1,5 @@
 import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { DomainGroup } from "./components/DomainGroup";
 import { ExtractionErrorAlert } from "./components/ExtractionErrorAlert";
@@ -198,18 +198,33 @@ function extractTabsConcurrent(
 		let failed = 0;
 		let cancelled = false;
 
+		// Use a queue with atomic access pattern - each worker gets exactly one item at a time
 		const queue = [...tabIds];
 		const active = new Set<number>();
+		let activeWorkers = 0;
+
+		const checkDone = () => {
+			// Only resolve when no workers are active and queue is empty or signal is aborted
+			if (activeWorkers === 0 && (queue.length === 0 || signal?.aborted)) {
+				resolve({ results, errors, cancelled });
+			}
+		};
 
 		const processNext = async (): Promise<void> => {
+			// Check for abort before acquiring work
 			if (signal?.aborted) {
 				cancelled = true;
+				activeWorkers--;
 				checkDone();
 				return;
 			}
 
+			// Atomically get next tab (JavaScript shift() is atomic per operation)
 			const tabId = queue.shift();
+
+			// No more work - this worker chain is done
 			if (tabId === undefined) {
+				activeWorkers--;
 				checkDone();
 				return;
 			}
@@ -285,27 +300,31 @@ function extractTabsConcurrent(
 				failed++;
 			} finally {
 				active.delete(tabId);
-				if (queue.length > 0 && !signal?.aborted) {
-					await processNext();
-				} else {
-					checkDone();
-				}
 			}
+
+			// Check for abort again after extraction (outside finally to avoid unsafe return)
+			if (signal?.aborted) {
+				cancelled = true;
+				activeWorkers--;
+				checkDone();
+				return;
+			}
+
+			// Continue processing if there's more work
+			await processNext();
 		};
 
-		let workersDone = 0;
-		// checkDone() is called when a worker's queue chain ends.
-		// Each worker calls checkDone() exactly once when it has no more tabs to process.
-		// When workersDone equals the number of initial workers, all tabs are done.
-		const checkDone = () => {
-			workersDone++;
-			if (workersDone >= Math.min(CONCURRENCY_LIMIT, tabIds.length)) {
-				resolve({ results, errors, cancelled });
-			}
-		};
+		// Start initial workers - each worker processes items sequentially
+		const initialWorkers = Math.min(CONCURRENCY_LIMIT, tabIds.length);
+		activeWorkers = initialWorkers;
 
-		for (let i = 0; i < Math.min(CONCURRENCY_LIMIT, tabIds.length); i++) {
-			processNext();
+		for (let i = 0; i < initialWorkers; i++) {
+			// Don't await - let workers run concurrently
+			processNext().catch((err) => {
+				console.error("Worker error:", err);
+				activeWorkers--;
+				checkDone();
+			});
 		}
 	});
 }
@@ -355,6 +374,16 @@ export function SidePanelApp() {
 	const [toRightExtractionProgress, setToRightExtractionProgress] = useState<ExtractionProgress | null>(null);
 	const [highlightedAbortController, setHighlightedAbortController] = useState<AbortController | null>(null);
 	const [highlightedExtractionProgress, setHighlightedExtractionProgress] = useState<ExtractionProgress | null>(null);
+
+	// Track mount state to prevent state updates on unmounted component
+	const isMountedRef = useRef(true);
+
+	useEffect(() => {
+		isMountedRef.current = true;
+		return () => {
+			isMountedRef.current = false;
+		};
+	}, []);
 
 	// Auto-hide progress bars after cancellation
 	useAutoHideProgress(extractionProgress, setExtractionProgress);
@@ -499,7 +528,9 @@ export function SidePanelApp() {
 					`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
 				);
 				setTimeout(() => {
-					setExtractionStatus("idle");
+					if (isMountedRef.current) {
+						setExtractionStatus("idle");
+					}
 				}, 2000);
 			}
 		} catch (err) {
@@ -617,7 +648,9 @@ export function SidePanelApp() {
 					`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
 				);
 				setTimeout(() => {
-					setToRightExtractionStatus("idle");
+					if (isMountedRef.current) {
+						setToRightExtractionStatus("idle");
+					}
 				}, 2000);
 			}
 		} catch (err) {
@@ -719,7 +752,9 @@ export function SidePanelApp() {
 					`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
 				);
 				setTimeout(() => {
-					setHighlightedExtractionStatus("idle");
+					if (isMountedRef.current) {
+						setHighlightedExtractionStatus("idle");
+					}
 				}, 2000);
 			}
 		} catch (err) {

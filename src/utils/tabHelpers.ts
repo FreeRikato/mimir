@@ -111,6 +111,7 @@ export interface CloseTabsResult {
  * Closes tabs safely while protecting the active tab.
  * Filters out the active tab from the list before closing.
  * Re-queries the active tab immediately before closing to minimize race conditions.
+ * Also queries active tab after close attempt to detect any race conditions.
  * Returns statistics about the operation.
  */
 export async function closeTabsSafely(tabIds: number[]): Promise<CloseTabsResult> {
@@ -133,15 +134,52 @@ export async function closeTabsSafely(tabIds: number[]): Promise<CloseTabsResult
 			return { closed: 0, failed: 0, activeProtected: true };
 		}
 
+		// Track the active tab ID before closing
+		const activeTabBeforeClose = activeTabId;
+
+		// Attempt to close the tabs
 		await chrome.tabs.remove(tabsToClose);
 
+		// Verify active tab wasn't accidentally closed (race condition detection)
+		const [activeTabAfter] = await chrome.tabs.query({
+			active: true,
+			currentWindow: true,
+		});
+
+		// If the active tab changed unexpectedly, it might have been closed accidentally
+		const activeTabWasClosed = activeTabBeforeClose && activeTabAfter?.id !== activeTabBeforeClose;
+
 		return {
-			closed: tabsToClose.length,
+			closed: activeTabWasClosed ? tabsToClose.length - 1 : tabsToClose.length,
 			failed: 0,
 			activeProtected: activeTabId !== undefined && tabIds.includes(activeTabId),
 		};
 	} catch (err) {
 		console.error("Failed to close tabs:", err);
-		return { closed: 0, failed: tabIds.length, activeProtected: false };
+
+		// Chrome throws an error if trying to close the last active tab or active tab in a window
+		// In this case, try closing all tabs except the active one
+		try {
+			const [activeTab] = await chrome.tabs.query({
+				active: true,
+				currentWindow: true,
+			});
+			const activeTabId = activeTab?.id;
+			const tabsToClose = activeTabId ? tabIds.filter((id) => id !== activeTabId) : tabIds;
+
+			if (tabsToClose.length > 0) {
+				await chrome.tabs.remove(tabsToClose);
+				return {
+					closed: tabsToClose.length,
+					failed: tabIds.length - tabsToClose.length,
+					activeProtected: true,
+				};
+			}
+
+			return { closed: 0, failed: tabIds.length, activeProtected: true };
+		} catch (retryErr) {
+			console.error("Retry failed to close tabs:", retryErr);
+			return { closed: 0, failed: tabIds.length, activeProtected: false };
+		}
 	}
 }

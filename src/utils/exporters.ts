@@ -13,19 +13,34 @@ export interface ExportOptions {
  * HTML IDs must start with a letter and can only contain letters, digits, hyphens, and underscores
  */
 function createHtmlId(input: string): string {
-	return input
-		.toLowerCase()
-		.replace(/[^a-z0-9]/gi, "-") // Replace non-alphanumeric chars with hyphens
-		.replace(/^-+/g, "") // Remove leading hyphens
-		.replace(/-+/g, "-") // Replace multiple hyphens with single hyphen
-		.replace(/^-/g, "x") // Ensure it doesn't start with a hyphen (prepend 'x' if needed)
-		.substring(0, 50); // Limit length
+	// Guard against null/undefined input
+	if (input == null) {
+		return "section";
+	}
+	const str = String(input);
+
+	return (
+		str
+			.toLowerCase()
+			.replace(/[^a-z0-9]/gi, "-") // Replace non-alphanumeric chars with hyphens
+			.replace(/^-+/g, "") // Remove leading hyphens
+			.replace(/-+/g, "-") // Replace multiple hyphens with single hyphen
+			.replace(/^-/g, "x") // Ensure it doesn't start with a hyphen (prepend 'x' if needed)
+			.substring(0, 50) || // Limit length
+		"section"
+	); // Ensure non-empty result
 }
 
 /**
  * Main export function that formats data based on the specified format
  */
 export function formatExport(data: ExtractedData[], format: ExportFormat): string {
+	// Guard against null/undefined input
+	if (!Array.isArray(data)) {
+		console.warn("formatExport called with non-array data:", data);
+		return JSON.stringify([], null, 2);
+	}
+
 	switch (format) {
 		case "json":
 			return formatAsJSON(data);
@@ -333,16 +348,22 @@ export function getMimeType(format: ExportFormat): string {
 // Helper functions
 
 function escapeCSVField(value: string): string {
+	// Guard against null/undefined input
+	const str = value == null ? "" : String(value);
+
 	// If the value contains quotes, commas, or newlines, wrap in quotes and escape internal quotes
-	if (value.includes('"') || value.includes(",") || value.includes("\n") || value.includes("\r")) {
-		return `"${value.replace(/"/g, '""')}"`;
+	if (str.includes('"') || str.includes(",") || str.includes("\n") || str.includes("\r")) {
+		return `"${str.replace(/"/g, '""')}"`;
 	}
-	return value;
+	return str;
 }
 
 function escapeHTML(text: string): string {
+	// Guard against null/undefined input
+	const str = text == null ? "" : String(text);
+
 	const div = document.createElement("div");
-	div.textContent = text;
+	div.textContent = str;
 	return div.innerHTML;
 }
 
@@ -351,6 +372,9 @@ function escapeHTMLAttribute(text: string): string {
 }
 
 function escapeMarkdown(text: string): string {
+	// Guard against null/undefined input
+	const str = text == null ? "" : String(text);
+
 	// Escape special markdown characters
-	return text.replace(/([_*[\]()\\`~#+\-.!|])/g, "\\$1");
+	return str.replace(/([_*[\]()\\`~#+\-.!|])/g, "\\$1");
 }

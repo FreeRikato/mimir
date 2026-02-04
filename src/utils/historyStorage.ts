@@ -4,6 +4,10 @@ const HISTORY_KEY = "mimir_history";
 const MAX_HISTORY_ENTRIES = 100;
 const QUOTA_LIMIT_BYTES = 5 * 1024 * 1024; // 5MB limit for history
 
+// Simple lock to prevent concurrent cleanup operations
+let isCleaningUp = false;
+const cleanupQueue: Array<() => void> = [];
+
 /**
  * Generate a unique ID for a history entry
  */
@@ -265,8 +269,20 @@ export async function getHistorySize(): Promise<number> {
 
 /**
  * Clean up old history entries beyond the max limit
+ * Uses a simple lock mechanism to prevent concurrent cleanup operations
  */
 export async function cleanupOldHistory(maxEntries: number = MAX_HISTORY_ENTRIES): Promise<void> {
+	// If cleanup is already in progress, queue this request
+	if (isCleaningUp) {
+		return new Promise<void>((resolve) => {
+			cleanupQueue.push(() => {
+				cleanupOldHistory(maxEntries).then(resolve);
+			});
+		});
+	}
+
+	isCleaningUp = true;
+
 	try {
 		const history = await getHistoryEntries();
 
@@ -281,6 +297,14 @@ export async function cleanupOldHistory(maxEntries: number = MAX_HISTORY_ENTRIES
 		console.info(`Cleaned up ${history.length - maxEntries} old history entries`);
 	} catch (err) {
 		console.error("Failed to cleanup old history:", err);
+	} finally {
+		isCleaningUp = false;
+
+		// Process any queued cleanup requests
+		const next = cleanupQueue.shift();
+		if (next) {
+			next();
+		}
 	}
 }
 
