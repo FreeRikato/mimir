@@ -3,6 +3,24 @@ console.log("Tab HTML Extractor background service worker loaded");
 // Open side panel when extension icon is clicked
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
+// Handle keyboard shortcuts
+chrome.commands.onCommand.addListener((command) => {
+	console.log("Background: Received command:", command);
+	try {
+		switch (command) {
+			case "extract-to-right":
+			case "extract-selected":
+			case "extract-highlighted": {
+				// Send message to side panel to trigger extraction
+				chrome.runtime.sendMessage({ type: "KEYBOARD_COMMAND", command });
+				break;
+			}
+		}
+	} catch (error) {
+		console.error("Background: Failed to handle command:", command, error);
+	}
+});
+
 chrome.runtime.onInstalled.addListener(() => {
 	console.log("Tab HTML Extractor extension installed");
 });

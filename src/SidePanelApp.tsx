@@ -812,7 +812,31 @@ export function SidePanelApp() {
 			console.error("Copy to clipboard failed:", err);
 			toast.error("Failed to copy to clipboard");
 		}
-	}, []);
+}, []);
+
+	// Effect to handle keyboard shortcut commands from background
+	useEffect(() => {
+		const handleMessage = (message: { type: string; command: string }) => {
+			if (message.type === "KEYBOARD_COMMAND") {
+				switch (message.command) {
+					case "extract-to-right":
+						handleExtractToRight();
+						break;
+					case "extract-selected":
+						handleExtract();
+						break;
+					case "extract-highlighted":
+						handleExtractHighlighted();
+						break;
+				}
+			}
+		};
+
+		chrome.runtime.onMessage.addListener(handleMessage);
+		return () => {
+			chrome.runtime.onMessage.removeListener(handleMessage);
+		};
+	}, [handleExtractToRight, handleExtract, handleExtractHighlighted]);
 
 	return (
 		<div className="h-screen w-full flex flex-col text-glass-primary">

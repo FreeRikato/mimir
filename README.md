@@ -73,3 +73,20 @@ export default defineConfig([
   },
 ])
 ```
+
+## Chrome Extension Keyboard Shortcuts
+
+Mimir exposes the following keyboard commands in `manifest.json`:
+
+| Command | macOS | Windows/Linux | Description |
+| --- | --- | --- | --- |
+| `_execute_action` | `Command+Shift+Y` | `Ctrl+Shift+Y` | Activate extension (opens Mimir side panel) |
+| `extract-to-right` | `Command+Shift+Right` | `Ctrl+Shift+Right` | Extract tabs to the right |
+| `extract-selected` | `Command+Shift+Down` | `Ctrl+Shift+Down` | Extract selected tabs |
+| `extract-highlighted` | `Command+Shift+Left` | `Ctrl+Shift+Left` | Extract highlighted tabs |
+
+You can reassign shortcuts at `chrome://extensions/shortcuts`.
+
+If you previously customized `open-sidepanel`, reassign the open shortcut to **Activate extension** after updating.
+
+If a shortcut does not fire, check whether Chrome or the operating system reserves that key combination. Reserved shortcuts take precedence over extension commands.

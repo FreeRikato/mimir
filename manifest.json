@@ -20,5 +20,34 @@
 	},
 	"side_panel": {
 		"default_path": "src/sidepanel/index.html"
+	},
+	"commands": {
+		"_execute_action": {
+			"suggested_key": {
+				"default": "Ctrl+Shift+Y",
+				"mac": "Command+Shift+Y"
+			}
+		},
+		"extract-to-right": {
+			"suggested_key": {
+				"default": "Ctrl+Shift+Right",
+				"mac": "Command+Shift+Right"
+			},
+			"description": "Extract tabs to the right"
+		},
+		"extract-selected": {
+			"suggested_key": {
+				"default": "Ctrl+Shift+Down",
+				"mac": "Command+Shift+Down"
+			},
+			"description": "Extract selected tabs"
+		},
+		"extract-highlighted": {
+			"suggested_key": {
+				"default": "Ctrl+Shift+Left",
+				"mac": "Command+Shift+Left"
+			},
+			"description": "Extract highlighted tabs"
+		}
 	}
 }
