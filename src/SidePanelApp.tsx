@@ -812,7 +812,7 @@ export function SidePanelApp() {
 			console.error("Copy to clipboard failed:", err);
 			toast.error("Failed to copy to clipboard");
 		}
-}, []);
+	}, []);
 
 	// Effect to handle keyboard shortcut commands from background
 	useEffect(() => {
