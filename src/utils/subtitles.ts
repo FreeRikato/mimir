@@ -1,3 +1,4 @@
+import toast from "react-hot-toast";
 import type {
 	FastApiErrorResponse,
 	FastApiSubtitleResponse,
@@ -7,17 +8,29 @@ import type {
 	SubtitleFetchOptions,
 } from "../types";
 import { SubtitleError } from "../types";
+import { checkBackendHealth, clearHealthCheckCache as clearHealthCache } from "./backendHealth";
 import { isYouTubeUrl, normalizeYouTubeUrl } from "./youtube";
 
 const SUBTITLES_BASE_URL = import.meta.env.VITE_SUBTITLES_BASE_URL ?? "";
+const SUBTITLES_API_KEY = import.meta.env.VITE_SUBTITLES_API_KEY ?? "";
 
 const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 500;
 const RETRY_MAX_DELAY_MS = 5000;
 const REQUEST_TIMEOUT_MS = 100000;
 
+// Track if we've already shown the backend unavailable toast
+let hasShownBackendUnavailableToast = false;
+
 const SUBTITLE_CACHE_PREFIX = "subtitle_";
 const SUBTITLE_CACHE_TTL = 3600000; // 1 hour
+
+// Chrome storage.local has effectively unlimited storage (limited by available disk space)
+// Setting a very high limit to avoid quota issues while still preventing abuse
+const SUBTITLE_CACHE_MAX_SIZE = 100 * 1024 * 1024; // 100MB in bytes
+
+// Metadata key for tracking subtitle cache entries and their sizes
+const SUBTITLE_CACHE_METADATA_KEY = "mimir_subtitle_metadata";
 
 interface SubtitleCacheEntry {
 	title: string;
@@ -26,6 +39,189 @@ interface SubtitleCacheEntry {
 	subtitleCount: number;
 	format: SubtitleExtractionFormat;
 	timestamp: number;
+	size: number;
+	accessCount: number;
+	lastAccess: number;
+}
+
+interface SubtitleCacheMetadata {
+	// Track size and access info for each subtitle cache key
+	entries: {
+		key: string;
+		size: number;
+		lastAccess: number;
+		accessCount: number;
+		timestamp: number;
+	}[];
+	totalSize: number;
+}
+
+/**
+ * Approximates the size of a value in bytes when stored in chrome.storage.local
+ * Uses UTF-16 encoding (2 bytes per character) as a reasonable approximation
+ */
+function calculateSize(value: unknown): number {
+	try {
+		// JSON.stringify gives us a reasonable approximation of the storage size
+		// Multiplying by 2 accounts for UTF-16 encoding used by JavaScript strings
+		const str = JSON.stringify(value);
+		return str.length * 2;
+	} catch {
+		// If we can't stringify, return a conservative estimate
+		return 1024; // 1KB default
+	}
+}
+
+/**
+ * Loads subtitle cache metadata from chrome.storage.local
+ */
+async function getSubtitleCacheMetadata(): Promise<SubtitleCacheMetadata> {
+	try {
+		const cached = await chrome.storage.local.get([SUBTITLE_CACHE_METADATA_KEY]);
+		return (cached[SUBTITLE_CACHE_METADATA_KEY] as SubtitleCacheMetadata) || { entries: [], totalSize: 0 };
+	} catch {
+		return { entries: [], totalSize: 0 };
+	}
+}
+
+/**
+ * Saves subtitle cache metadata to chrome.storage.local
+ */
+async function setSubtitleCacheMetadata(metadata: SubtitleCacheMetadata): Promise<void> {
+	try {
+		await chrome.storage.local.set({ [SUBTITLE_CACHE_METADATA_KEY]: metadata });
+	} catch (err) {
+		console.warn("[Subtitle Cache] Failed to save cache metadata:", err);
+	}
+}
+
+/**
+ * Updates metadata for a specific subtitle cache entry
+ */
+async function updateSubtitleEntryMetadata(
+	key: string,
+	size: number,
+	timestamp: number,
+	isAccess: boolean = false,
+): Promise<void> {
+	const metadata = await getSubtitleCacheMetadata();
+	const existingIndex = metadata.entries.findIndex((e) => e.key === key);
+
+	if (existingIndex >= 0) {
+		// Update existing entry
+		const entry = metadata.entries[existingIndex];
+		if (isAccess) {
+			// On access, update lastAccess time and increment count
+			entry.lastAccess = Date.now();
+			entry.accessCount++;
+		} else {
+			// On set, update size and timestamp
+			const oldSize = entry.size;
+			entry.size = size;
+			entry.timestamp = timestamp;
+			entry.lastAccess = timestamp;
+			entry.accessCount++;
+			metadata.totalSize += size - oldSize;
+		}
+	} else {
+		// Add new entry
+		metadata.entries.push({
+			key,
+			size,
+			timestamp,
+			lastAccess: timestamp,
+			accessCount: 1,
+		});
+		metadata.totalSize += size;
+	}
+
+	await setSubtitleCacheMetadata(metadata);
+}
+
+/**
+ * Removes metadata for a specific subtitle cache entry
+ */
+async function removeSubtitleEntryMetadata(key: string): Promise<void> {
+	const metadata = await getSubtitleCacheMetadata();
+	const index = metadata.entries.findIndex((e) => e.key === key);
+
+	if (index >= 0) {
+		const entry = metadata.entries[index];
+		metadata.totalSize -= entry.size;
+		metadata.entries.splice(index, 1);
+		await setSubtitleCacheMetadata(metadata);
+	}
+}
+
+/**
+ * Finds and removes the least recently used subtitle cache entry
+ * Prioritizes expired entries first, then uses LRU
+ */
+async function evictSubtitleLRUEntry(): Promise<boolean> {
+	const metadata = await getSubtitleCacheMetadata();
+	if (metadata.entries.length === 0) {
+		return false;
+	}
+
+	const now = Date.now();
+
+	// First, try to find expired entries
+	const expiredEntry = metadata.entries.find((e) => now - e.timestamp > SUBTITLE_CACHE_TTL);
+
+	const entryToEvict =
+		expiredEntry ||
+		metadata.entries.reduce((oldest, entry) => {
+			if (entry.lastAccess < oldest.lastAccess) {
+				return entry;
+			}
+			// If lastAccess times are equal, use access count as secondary criteria
+			if (entry.lastAccess === oldest.lastAccess && entry.accessCount < oldest.accessCount) {
+				return entry;
+			}
+			return oldest;
+		}, metadata.entries[0]);
+
+	try {
+		await chrome.storage.local.remove([entryToEvict.key]);
+		await removeSubtitleEntryMetadata(entryToEvict.key);
+		console.debug(`[Subtitle Cache] Evicted entry: ${entryToEvict.key} (${entryToEvict.size} bytes)`);
+		return true;
+	} catch (err) {
+		console.warn(`[Subtitle Cache] Failed to evict entry ${entryToEvict.key}:`, err);
+		return false;
+	}
+}
+
+/**
+ * Ensures there's enough space in the subtitle cache for a new entry
+ * Evicts LRU entries until there's sufficient space
+ */
+async function ensureSubtitleCacheSpace(requiredSize: number): Promise<void> {
+	const metadata = await getSubtitleCacheMetadata();
+
+	// Check if we need to evict entries
+	if (metadata.totalSize + requiredSize <= SUBTITLE_CACHE_MAX_SIZE) {
+		return; // Enough space available
+	}
+
+	const maxEvictions = 100; // Safety limit to prevent infinite loops
+	let evictions = 0;
+
+	while (
+		(await getSubtitleCacheMetadata()).totalSize + requiredSize > SUBTITLE_CACHE_MAX_SIZE &&
+		evictions < maxEvictions
+	) {
+		const evicted = await evictSubtitleLRUEntry();
+		if (!evicted) {
+			// Couldn't evict more entries (cache is empty or failed)
+			break;
+		}
+		evictions++;
+	}
+
+	if (evictions > 0) {
+		console.debug(`[Subtitle Cache] Evicted ${evictions} entries to free up space`);
+	}
 }
 
 /**
@@ -121,14 +317,23 @@ async function getCachedSubtitle(
 
 		if (!entry) return null;
 
+		// Check for expiration (1 hour TTL)
 		if (Date.now() - entry.timestamp > SUBTITLE_CACHE_TTL) {
 			await chrome.storage.local.remove([cacheKey]);
+			await removeSubtitleEntryMetadata(cacheKey);
 			return null;
 		}
 
+		// Update access tracking for LRU eviction
+		await updateSubtitleEntryMetadata(cacheKey, entry.size, entry.timestamp, true);
+
 		return { title: entry.title, text: entry.text, subtitles: entry.subtitles, subtitleCount: entry.subtitleCount };
 	} catch (err) {
-		console.warn("Failed to load subtitle from cache:", err);
+		// Cache read failures are non-fatal - we'll fetch from API instead
+		const message = err instanceof Error ? err.message : String(err);
+		console.warn(
+			`[Subtitle Cache] Failed to read cached subtitles for video ${videoId}. Will fetch from API. Error: ${message}`,
+		);
 		return null;
 	}
 }
@@ -140,18 +345,63 @@ async function setCachedSubtitle(
 ): Promise<void> {
 	try {
 		const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}_${format}`;
+		const timestamp = Date.now();
 		const entry: SubtitleCacheEntry = {
 			title: data.title,
 			text: data.text,
 			subtitles: data.subtitles,
 			subtitleCount: data.subtitleCount,
 			format,
-			timestamp: Date.now(),
+			timestamp,
+			size: 0, // Will be calculated below
+			accessCount: 1,
+			lastAccess: timestamp,
 		};
 
-		await chrome.storage.local.set({ [cacheKey]: entry });
+		// Calculate entry size before writing
+		const entrySize = calculateSize(entry);
+		entry.size = entrySize;
+
+		// Ensure there's enough space before writing
+		await ensureSubtitleCacheSpace(entrySize);
+
+		// Check if we're overwriting an existing entry
+		const metadata = await getSubtitleCacheMetadata();
+		const existingEntry = metadata.entries.find((e) => e.key === cacheKey);
+		if (existingEntry) {
+			// Account for the size of the entry we're replacing
+			metadata.totalSize -= existingEntry.size;
+		}
+
+		// Write the cache entry
+		try {
+			await chrome.storage.local.set({ [cacheKey]: entry });
+			// Update metadata after successful write
+			await updateSubtitleEntryMetadata(cacheKey, entrySize, timestamp);
+		} catch (setErr) {
+			// If we get a quota error, try emergency eviction and retry
+			if (setErr instanceof Error && (setErr.message.includes("QUOTA") || setErr.message.includes("quota"))) {
+				console.warn("[Subtitle Cache] Storage quota exceeded, performing emergency eviction");
+
+				// Try evicting multiple entries
+				for (let i = 0; i < 5; i++) {
+					await evictSubtitleLRUEntry();
+				}
+
+				// Retry write
+				await chrome.storage.local.set({ [cacheKey]: entry });
+				await updateSubtitleEntryMetadata(cacheKey, entrySize, timestamp);
+			} else {
+				throw setErr;
+			}
+		}
 	} catch (err) {
-		console.warn("Failed to write subtitle cache:", err);
+		// Cache write failures are non-fatal - subtitles were successfully fetched, just not cached
+		const message = err instanceof Error ? err.message : String(err);
+		console.warn(
+			`[Subtitle Cache] Failed to write subtitles for video ${videoId} to cache. Subtitles will still be returned. Error: ${message}`,
+		);
+		// Don't re-throw - caching is an optimization, not a requirement
 	}
 }
 
@@ -170,6 +420,19 @@ export function getSubtitlesApiUrl(youtubeUrl: string, format: SubtitleExtractio
 	const url = `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=${format}`;
 	console.log("Subtitles API URL:", url);
 	return url;
+}
+
+export function getApiHeaders(): Record<string, string> {
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+	};
+
+	// Add API key authentication if configured
+	if (SUBTITLES_API_KEY) {
+		headers["X-API-Key"] = SUBTITLES_API_KEY;
+	}
+
+	return headers;
 }
 
 // Fetch through background service worker (more reliable in Manifest V3)
@@ -204,7 +467,7 @@ async function fetchFromBackground(
 
 		try {
 			console.log("SidePanel: Sending FETCH_SUBTITLES message to background worker...");
-			chrome.runtime.sendMessage({ type: "FETCH_SUBTITLES", url, format }, (response) => {
+			chrome.runtime.sendMessage({ type: "FETCH_SUBTITLES", url, format, apiKey: SUBTITLES_API_KEY }, (response) => {
 				clearTimeout(timeoutId);
 				const elapsed = Date.now() - startTime;
 				console.log(`SidePanel: Response received from background in ${elapsed}ms`);
@@ -271,7 +534,8 @@ async function directFetchWithTimeout(
 
 	try {
 		console.log("SidePanel: Making direct fetch request...");
-		const response = await fetch(url, { signal: controller.signal });
+		const headers = getApiHeaders();
+		const response = await fetch(url, { signal: controller.signal, headers });
 		clearTimeout(timeoutId);
 		console.log("SidePanel: Direct fetch completed with status:", response.status);
 		return response;
@@ -378,6 +642,18 @@ async function fetchWithRetry<T>(
 	throw lastError;
 }
 
+// Export health check functions for external use
+export { checkBackendHealth, clearHealthCheckCache as resetBackendHealthCheck } from "./backendHealth";
+
+/**
+ * Clears the health check cache and forces a fresh check on next attempt.
+ * Use this when user manually retries subtitle fetching.
+ */
+export async function clearHealthCheckCache(): Promise<void> {
+	await clearHealthCache();
+	hasShownBackendUnavailableToast = false;
+}
+
 export async function fetchYoutubeSubtitles(
 	youtubeUrl: string,
 	options: SubtitleFetchOptions = {},
@@ -389,6 +665,28 @@ export async function fetchYoutubeSubtitles(
 	}
 
 	const videoId = await extractVideoId(youtubeUrl);
+
+	// Check backend health before attempting fetch (unless user explicitly wants to retry)
+	const isHealthy = await checkBackendHealth();
+	if (!isHealthy) {
+		// Skip retries if backend is known to be down
+		if (!hasShownBackendUnavailableToast) {
+			toast.error("YouTube subtitle backend is unavailable. Subtitles will be skipped.", {
+				id: "backend-unavailable",
+				duration: 5000,
+			});
+			hasShownBackendUnavailableToast = true;
+		}
+		throw new SubtitleError(
+			"YouTube subtitle backend is unavailable. Subtitles will be skipped.",
+			"NETWORK_ERROR",
+			undefined,
+			youtubeUrl,
+		);
+	} else {
+		// Reset the toast flag if backend is healthy again
+		hasShownBackendUnavailableToast = false;
+	}
 
 	const cached = await getCachedSubtitle(videoId, format);
 	if (cached) {
@@ -418,10 +716,26 @@ export async function fetchYoutubeSubtitles(
 					throw new SubtitleError(errorMessage, "INVALID_URL", undefined, youtubeUrl);
 				}
 				if (response.status === 401 || errorType === "unauthorized") {
-					throw new SubtitleError("Unauthorized request", "API_ERROR", undefined, youtubeUrl);
+					throw new SubtitleError(
+						"Unauthorized: Please check your API key configuration (VITE_SUBTITLES_API_KEY)",
+						"API_ERROR",
+						undefined,
+						youtubeUrl,
+					);
 				}
 				if (response.status === 403 || errorType === "forbidden") {
-					throw new SubtitleError("Access forbidden", "API_ERROR", undefined, youtubeUrl);
+					const isAuthError =
+						errorMessage.toLowerCase().includes("api key") ||
+						errorMessage.toLowerCase().includes("unauthorized") ||
+						errorMessage.toLowerCase().includes("forbidden");
+					throw new SubtitleError(
+						isAuthError
+							? "Access forbidden: Invalid or missing API key. Please configure VITE_SUBTITLES_API_KEY in your .env file."
+							: "Access forbidden",
+						"API_ERROR",
+						undefined,
+						youtubeUrl,
+					);
 				}
 				if (response.status === 404 || errorType === "download_failed" || errorType === "not_found") {
 					throw new SubtitleError(errorMessage, "NO_SUBTITLES", undefined, youtubeUrl);
