@@ -13,7 +13,13 @@
 		"default_title": "Mimir"
 	},
 	"permissions": ["scripting", "activeTab", "storage", "sidePanel", "tabs", "clipboardWrite"],
-	"host_permissions": ["http://*/*", "https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+	"host_permissions": [
+		"<all_urls>",
+		"http://localhost/*",
+		"http://127.0.0.1/*",
+		"https://localhost/*",
+		"https://127.0.0.1/*"
+	],
 	"background": {
 		"service_worker": "src/background/index.ts",
 		"type": "module"
