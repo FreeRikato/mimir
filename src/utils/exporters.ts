@@ -1,5 +1,26 @@
 import type { ExtractedData } from "../types";
 
+/**
+ * Sanitize URL for use in href attributes
+ * Ensures the URL uses a safe protocol (http, https, mailto, tel)
+ * Prevents javascript: and other dangerous protocol attacks
+ */
+function sanitizeUrl(url: string): string {
+	const str = url == null ? "" : String(url);
+	try {
+		const parsed = new URL(str);
+		// Only allow safe protocols
+		const safeProtocols = ["http:", "https:", "mailto:", "tel:"];
+		if (!safeProtocols.includes(parsed.protocol)) {
+			return "#"; // Return safe fallback for dangerous protocols
+		}
+		return str;
+	} catch {
+		// Invalid URL, return safe fallback
+		return "#";
+	}
+}
+
 export type ExportFormat = "json" | "markdown" | "text" | "csv" | "html";
 
 export interface ExportOptions {
@@ -281,8 +302,9 @@ export function formatAsHTML(data: ExtractedData[]): string {
 		html += `  <div class="domain-header" id="${anchorId}">${escapeHTML(domain)}</div>\n`;
 
 		for (const item of items) {
+			const sanitizedUrl = sanitizeUrl(item.url);
 			html += `  <div class="entry">
-    <div class="entry-title"><a href="${escapeHTMLAttribute(item.url)}" target="_blank">${escapeHTML(item.title)}</a></div>
+    <div class="entry-title"><a href="${sanitizedUrl}" target="_blank" rel="noopener noreferrer">${escapeHTML(item.title)}</a></div>
     <div class="entry-url">${escapeHTML(item.url)}</div>
     <div class="entry-content">${escapeHTML(item.text)}</div>
     <div class="entry-date">Extracted: ${new Date(item.timestamp).toLocaleString()}</div>
@@ -365,10 +387,6 @@ function escapeHTML(text: string): string {
 	const div = document.createElement("div");
 	div.textContent = str;
 	return div.innerHTML;
-}
-
-function escapeHTMLAttribute(text: string): string {
-	return escapeHTML(text).replace(/"/g, "&quot;");
 }
 
 function escapeMarkdown(text: string): string {
