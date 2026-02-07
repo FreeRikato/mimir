@@ -176,20 +176,21 @@ export function useHistory(): UseHistoryReturn {
 		await refresh();
 	}, [refresh]);
 
-	// Listen for storage changes from other contexts
+	// Listen for window visibility changes to refresh when user returns to the tab
+	// This ensures data stays fresh if changes were made elsewhere
 	useEffect(() => {
-		const handleStorageChange = (changes: Record<string, chrome.storage.StorageChange>) => {
-			if ("mimir_history" in changes) {
+		const handleVisibilityChange = () => {
+			if (!document.hidden && !isSearchActive) {
 				refresh();
 			}
 		};
 
-		chrome.storage.onChanged.addListener(handleStorageChange);
+		document.addEventListener("visibilitychange", handleVisibilityChange);
 
 		return () => {
-			chrome.storage.onChanged.removeListener(handleStorageChange);
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
 		};
-	}, [refresh]);
+	}, [refresh, isSearchActive]);
 
 	// Initial load - only run once on mount
 	useEffect(() => {
