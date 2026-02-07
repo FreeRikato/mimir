@@ -1,5 +1,6 @@
 import { Clock, FileJson, FileSpreadsheet, FileText, Globe, Loader2, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Virtuoso } from "react-virtuoso";
 import type { ExportFormat, ExtractedData, HistoryEntry } from "../types";
 import { ExportFormatModal } from "./ExportFormatModal";
 import { HistoryItem } from "./HistoryItem";
@@ -160,25 +161,37 @@ export function HistoryPanel({
 							</p>
 						</div>
 					) : (
-						<div className="p-3 space-y-2">
-							{entries.map((entry) => {
-								const FormatIcon = FORMAT_ICONS[entry.format] || FileText;
-								return (
-									<HistoryItem
-										key={entry.id}
-										entry={entry}
-										FormatIcon={FormatIcon}
-										onOpenExportFormatModal={() => handleOpenExportFormatModal(entry)}
-										onDelete={() => onDelete(entry.id)}
-										onCopy={() => onCopy(entry.data, entry.format)}
-									/>
-								);
-							})}
-							{hasMore && (
-								<div ref={loadMoreRef} className="flex items-center justify-center py-4 text-glass-muted">
-									<Loader2 className="w-5 h-5 animate-spin" />
-								</div>
-							)}
+						<div className="p-3 h-full">
+							<Virtuoso
+								style={{ height: "100%" }}
+								data={entries}
+								itemContent={(_index, entry) => {
+									const FormatIcon = FORMAT_ICONS[entry.format] || FileText;
+									return (
+										<div className="mb-2" key={entry.id}>
+											<HistoryItem
+												entry={entry}
+												FormatIcon={FormatIcon}
+												onOpenExportFormatModal={() => handleOpenExportFormatModal(entry)}
+												onDelete={() => onDelete(entry.id)}
+												onCopy={() => onCopy(entry.data, entry.format)}
+											/>
+										</div>
+									);
+								}}
+								components={{
+									Footer: () => (
+										<>
+											{hasMore && (
+												<div ref={loadMoreRef} className="flex items-center justify-center py-4 text-glass-muted">
+													<Loader2 className="w-5 h-5 animate-spin" />
+												</div>
+											)}
+										</>
+									),
+								}}
+								defaultItemHeight={120}
+							/>
 						</div>
 					)}
 				</div>
