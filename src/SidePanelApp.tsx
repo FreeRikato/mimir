@@ -1,4 +1,4 @@
-import { Loader2 } from "lucide-react";
+import { Clipboard, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { DomainGroup } from "./components/DomainGroup";
@@ -29,6 +29,82 @@ import { getSubtitleFormatSetting, type SubtitleFormat, setSubtitleFormatSetting
 import { fetchYoutubeSubtitles } from "./utils/subtitles";
 import { closeTabsSafely, getTabsToRight } from "./utils/tabHelpers";
 import { isYouTubeUrl } from "./utils/youtube";
+
+// Pending clipboard data for retry when panel gets focus
+let pendingClipboardData: string | null = null;
+let pendingToastId: string | undefined;
+
+/**
+ * Safely writes text to clipboard with focus check and user-friendly UX
+ * When the document is not focused (e.g., keyboard shortcuts), stores the data
+ * and prompts user to click the panel to enable clipboard access.
+ */
+async function safeWriteToClipboard(text: string): Promise<boolean> {
+	// Check focus before attempting clipboard write
+	if (!document.hasFocus()) {
+		// Store data for retry when panel gains focus
+		pendingClipboardData = text;
+
+		// Show user-friendly toast with clickable action
+		if (pendingToastId) {
+			toast.dismiss(pendingToastId);
+		}
+
+		pendingToastId = toast.error("Click the Copy Now button above to copy your extracted content", {
+			duration: 10000,
+			icon: "📋",
+		});
+
+		console.warn("Clipboard write skipped: document not focused. Data stored for retry on focus.");
+		return false;
+	}
+
+	try {
+		await navigator.clipboard.writeText(text);
+		// Clear pending data on success
+		pendingClipboardData = null;
+		if (pendingToastId) {
+			toast.dismiss(pendingToastId);
+			pendingToastId = undefined;
+		}
+		return true;
+	} catch (err) {
+		// Check if it's a focus-related error (some browsers throw instead of checking hasFocus)
+		if (
+			err instanceof Error &&
+			(err.name === "NotAllowedError" || err.message.includes("not focused") || err.message.includes("not allowed"))
+		) {
+			// Store data for retry when panel gains focus
+			pendingClipboardData = text;
+
+			// Show user-friendly toast with clickable action
+			if (pendingToastId) {
+				toast.dismiss(pendingToastId);
+			}
+
+			pendingToastId = toast.error("Click the Copy Now button above to copy your extracted content", {
+				duration: 10000,
+				icon: "📋",
+			});
+
+			console.warn("Clipboard write failed: focus required. Data stored for retry on focus.");
+			return false;
+		}
+		// For other errors, log and rethrow
+		throw err;
+	}
+}
+
+/**
+ * Clears any pending clipboard data
+ */
+function clearPendingClipboard() {
+	pendingClipboardData = null;
+	if (pendingToastId) {
+		toast.dismiss(pendingToastId);
+		pendingToastId = undefined;
+	}
+}
 
 // Custom hook to auto-hide progress bars after cancellation
 function useAutoHideProgress(
@@ -165,6 +241,22 @@ function createExtractionError(id: number, tab: chrome.tabs.Tab | null, err: unk
 	if (err instanceof SubtitleError) {
 		code = err.code;
 		userMessage = err.message;
+	} else if (err instanceof Error) {
+		// Handle Error and DOMException (DOMException extends Error in modern browsers)
+		userMessage = err.message || "Unknown error";
+		// Special handling for common error types
+		if (err.name === "DOMException") {
+			code = "NETWORK_ERROR";
+			// Add more context for DOMException
+			if (!userMessage) {
+				userMessage = "Access denied or page not accessible";
+			}
+		}
+	} else if (typeof err === "string") {
+		userMessage = err;
+	} else if (err != null) {
+		// Try to extract message from unknown error objects
+		userMessage = (err as { message?: string }).message || JSON.stringify(err);
 	}
 
 	return {
@@ -290,12 +382,26 @@ function extractTabsConcurrent(
 					currentTab: null,
 				});
 			} catch (err) {
+				// Extract error message from various error types
+				let errorMessage = "Unknown error";
+				if (err instanceof Error) {
+					errorMessage = err.message || "Unknown error";
+					// Add context for DOMException
+					if (err.name === "DOMException" && !errorMessage) {
+						errorMessage = "Access denied or page not accessible";
+					}
+				} else if (typeof err === "string") {
+					errorMessage = err;
+				} else if (err != null) {
+					errorMessage = (err as { message?: string }).message || JSON.stringify(err);
+				}
+
 				errors.push({
 					tabId,
 					url: "unknown",
 					title: currentTabTitle,
 					errorCode: "NETWORK_ERROR",
-					userMessage: err instanceof Error ? err.message : "Unknown error",
+					userMessage: errorMessage,
 				});
 				failed++;
 			} finally {
@@ -378,10 +484,39 @@ export function SidePanelApp() {
 	// Track mount state to prevent state updates on unmounted component
 	const isMountedRef = useRef(true);
 
+	// State for showing manual copy button when clipboard is unavailable
+	const [showManualCopyButton, setShowManualCopyButton] = useState(false);
+	const [pendingClipboardContent, setPendingClipboardContent] = useState<string | null>(null);
+
 	useEffect(() => {
 		isMountedRef.current = true;
 		return () => {
 			isMountedRef.current = false;
+		};
+	}, []);
+
+	// Focus event listener to auto-retry clipboard when user focuses the panel
+	useEffect(() => {
+		const handleFocus = async () => {
+			// Check if there's pending clipboard data to retry
+			if (pendingClipboardData) {
+				try {
+					await navigator.clipboard.writeText(pendingClipboardData);
+					pendingClipboardData = null;
+					if (pendingToastId) {
+						toast.dismiss(pendingToastId);
+						pendingToastId = undefined;
+					}
+					toast.success("Copied to clipboard!", { id: "clipboard-auto-success" });
+				} catch (err) {
+					console.warn("Auto-retry clipboard failed:", err);
+				}
+			}
+		};
+
+		document.addEventListener("focus", handleFocus, true); // Use capture phase
+		return () => {
+			document.removeEventListener("focus", handleFocus, true);
 		};
 	}, []);
 
@@ -488,11 +623,18 @@ export function SidePanelApp() {
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
+			let clipboardSuccess = false;
 			if (validResults.length > 0) {
 				const jsonString = JSON.stringify(validResults, null, 2);
-				await navigator.clipboard.writeText(jsonString);
+				clipboardSuccess = await safeWriteToClipboard(jsonString);
 
-				// Only save to history and close tabs if not cancelled
+				// Show manual copy button if clipboard failed
+				if (!clipboardSuccess) {
+					setPendingClipboardContent(jsonString);
+					setShowManualCopyButton(true);
+				}
+
+				// ALWAYS save to history regardless of clipboard success (as long as not cancelled)
 				if (!cancelled) {
 					await history.addEntry(validResults, "json", "clipboard");
 
@@ -508,12 +650,22 @@ export function SidePanelApp() {
 
 			if (cancelled) {
 				setExtractionStatus("idle");
-				toast.success(
-					`Cancelled. ${validResults.length} tab${validResults.length === 1 ? "" : "s"} copied to clipboard.`,
-					{
-						icon: "⚠️",
-					},
-				);
+				if (clipboardSuccess) {
+					toast.success(
+						`Cancelled. ${validResults.length} tab${validResults.length === 1 ? "" : "s"} copied to clipboard.`,
+						{
+							icon: "⚠️",
+						},
+					);
+				} else if (validResults.length > 0) {
+					toast(
+						`Cancelled. Extracted ${validResults.length} tab${validResults.length === 1 ? "" : "s"} - click the toast above to copy.`,
+						{
+							icon: "⚠️",
+							duration: 5000,
+						},
+					);
+				}
 			} else if (errors.length > 0 && validResults.length === 0) {
 				setExtractionStatus("error");
 				toast.error(`Extraction failed for all ${selectedIds.length} tab${selectedIds.length > 1 ? "s" : ""}`);
@@ -524,9 +676,19 @@ export function SidePanelApp() {
 				});
 			} else {
 				setExtractionStatus("success");
-				toast.success(
-					`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
-				);
+				if (clipboardSuccess) {
+					toast.success(
+						`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
+					);
+				} else {
+					toast(
+						`Extracted ${validResults.length} tab${validResults.length > 1 ? "s" : ""} - click the toast above to copy.`,
+						{
+							icon: "⚠️",
+							duration: 5000,
+						},
+					);
+				}
 				setTimeout(() => {
 					if (isMountedRef.current) {
 						setExtractionStatus("idle");
@@ -608,11 +770,18 @@ export function SidePanelApp() {
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
+			let clipboardSuccess = false;
 			if (validResults.length > 0) {
 				const jsonString = JSON.stringify(validResults, null, 2);
-				await navigator.clipboard.writeText(jsonString);
+				clipboardSuccess = await safeWriteToClipboard(jsonString);
 
-				// Only save to history and close tabs if not cancelled
+				// Show manual copy button if clipboard failed
+				if (!clipboardSuccess) {
+					setPendingClipboardContent(jsonString);
+					setShowManualCopyButton(true);
+				}
+
+				// ALWAYS save to history regardless of clipboard success (as long as not cancelled)
 				if (!cancelled) {
 					await history.addEntry(validResults, "json", "clipboard");
 
@@ -628,12 +797,22 @@ export function SidePanelApp() {
 
 			if (cancelled) {
 				setToRightExtractionStatus("idle");
-				toast.success(
-					`Cancelled. ${validResults.length} tab${validResults.length === 1 ? "" : "s"} copied to clipboard.`,
-					{
-						icon: "⚠️",
-					},
-				);
+				if (clipboardSuccess) {
+					toast.success(
+						`Cancelled. ${validResults.length} tab${validResults.length === 1 ? "" : "s"} copied to clipboard.`,
+						{
+							icon: "⚠️",
+						},
+					);
+				} else if (validResults.length > 0) {
+					toast(
+						`Cancelled. Extracted ${validResults.length} tab${validResults.length === 1 ? "" : "s"} - click the toast above to copy.`,
+						{
+							icon: "⚠️",
+							duration: 5000,
+						},
+					);
+				}
 			} else if (errors.length > 0 && validResults.length === 0) {
 				setToRightExtractionStatus("error");
 				toast.error(`Extraction failed for all ${tabIds.length} tab${tabIds.length > 1 ? "s" : ""}`);
@@ -644,9 +823,19 @@ export function SidePanelApp() {
 				});
 			} else {
 				setToRightExtractionStatus("success");
-				toast.success(
-					`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
-				);
+				if (clipboardSuccess) {
+					toast.success(
+						`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
+					);
+				} else {
+					toast(
+						`Extracted ${validResults.length} tab${validResults.length > 1 ? "s" : ""} - click the toast above to copy.`,
+						{
+							icon: "⚠️",
+							duration: 5000,
+						},
+					);
+				}
 				setTimeout(() => {
 					if (isMountedRef.current) {
 						setToRightExtractionStatus("idle");
@@ -712,11 +901,18 @@ export function SidePanelApp() {
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
+			let clipboardSuccess = false;
 			if (validResults.length > 0) {
 				const jsonString = JSON.stringify(validResults, null, 2);
-				await navigator.clipboard.writeText(jsonString);
+				clipboardSuccess = await safeWriteToClipboard(jsonString);
 
-				// Only save to history and close tabs if not cancelled
+				// Show manual copy button if clipboard failed
+				if (!clipboardSuccess) {
+					setPendingClipboardContent(jsonString);
+					setShowManualCopyButton(true);
+				}
+
+				// ALWAYS save to history regardless of clipboard success (as long as not cancelled)
 				if (!cancelled) {
 					await history.addEntry(validResults, "json", "clipboard");
 
@@ -732,12 +928,22 @@ export function SidePanelApp() {
 
 			if (cancelled) {
 				setHighlightedExtractionStatus("idle");
-				toast.success(
-					`Cancelled. ${validResults.length} tab${validResults.length === 1 ? "" : "s"} copied to clipboard.`,
-					{
-						icon: "⚠️",
-					},
-				);
+				if (clipboardSuccess) {
+					toast.success(
+						`Cancelled. ${validResults.length} tab${validResults.length === 1 ? "" : "s"} copied to clipboard.`,
+						{
+							icon: "⚠️",
+						},
+					);
+				} else if (validResults.length > 0) {
+					toast(
+						`Cancelled. Extracted ${validResults.length} tab${validResults.length === 1 ? "" : "s"} - click the toast above to copy.`,
+						{
+							icon: "⚠️",
+							duration: 5000,
+						},
+					);
+				}
 			} else if (errors.length > 0 && validResults.length === 0) {
 				setHighlightedExtractionStatus("error");
 				toast.error(`Extraction failed for all ${tabIds.length} tab${tabIds.length > 1 ? "s" : ""}`);
@@ -748,9 +954,19 @@ export function SidePanelApp() {
 				});
 			} else {
 				setHighlightedExtractionStatus("success");
-				toast.success(
-					`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
-				);
+				if (clipboardSuccess) {
+					toast.success(
+						`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
+					);
+				} else {
+					toast(
+						`Extracted ${validResults.length} tab${validResults.length > 1 ? "s" : ""} - click the toast above to copy.`,
+						{
+							icon: "⚠️",
+							duration: 5000,
+						},
+					);
+				}
 				setTimeout(() => {
 					if (isMountedRef.current) {
 						setHighlightedExtractionStatus("idle");
@@ -806,13 +1022,33 @@ export function SidePanelApp() {
 	const handleCopy = useCallback(async (data: ExtractedData[], format: ExportFormat) => {
 		try {
 			const formatted = formatExport(data, format);
-			await navigator.clipboard.writeText(formatted);
-			toast.success("Copied to clipboard");
+			const success = await safeWriteToClipboard(formatted);
+			if (success) {
+				toast.success("Copied to clipboard");
+			} else {
+				toast.error("Clipboard unavailable. Please click on the side panel first to focus it, then try again.");
+			}
 		} catch (err) {
 			console.error("Copy to clipboard failed:", err);
 			toast.error("Failed to copy to clipboard");
 		}
 	}, []);
+
+	// Handler for manual copy button (when clipboard is unavailable due to focus)
+	const handleManualCopy = useCallback(async () => {
+		if (!pendingClipboardContent) return;
+
+		try {
+			await navigator.clipboard.writeText(pendingClipboardContent);
+			setPendingClipboardContent(null);
+			setShowManualCopyButton(false);
+			clearPendingClipboard();
+			toast.success("Copied to clipboard!");
+		} catch (err) {
+			console.error("Manual copy failed:", err);
+			toast.error("Still unavailable. Please click the side panel first.");
+		}
+	}, [pendingClipboardContent]);
 
 	// Effect to handle keyboard shortcut commands from background
 	useEffect(() => {
@@ -869,6 +1105,26 @@ export function SidePanelApp() {
 						setExtractionStatus("idle");
 					}}
 				/>
+			)}
+
+			{/* Manual Copy Button - shown when clipboard is unavailable */}
+			{showManualCopyButton && pendingClipboardContent && (
+				<div className="sticky top-0 z-30 px-4 pt-2">
+					<div className="glass-heavy rounded-lg p-3 border border-amber-500/30 bg-amber-500/10">
+						<div className="flex items-center justify-between gap-3">
+							<div className="flex items-center gap-2">
+								<Clipboard className="w-4 h-4 text-amber-400 shrink-0" />
+								<p className="text-sm text-glass-primary">Click to copy your extracted content</p>
+							</div>
+							<button
+								onClick={handleManualCopy}
+								className="px-3 py-1.5 text-sm font-medium rounded-lg bg-amber-500 hover:bg-amber-600 text-white transition-colors shrink-0"
+							>
+								Copy Now
+							</button>
+						</div>
+					</div>
+				</div>
 			)}
 
 			{/* Content */}
