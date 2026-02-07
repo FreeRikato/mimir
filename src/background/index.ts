@@ -1,5 +1,9 @@
 console.log("Tab HTML Extractor background service worker loaded");
 
+// API key for subtitle backend authentication (injected by Vite)
+const SUBTITLES_API_KEY =
+	typeof import.meta.env.VITE_SUBTITLES_API_KEY === "string" ? import.meta.env.VITE_SUBTITLES_API_KEY : "";
+
 // Open side panel when extension icon is clicked
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -12,7 +16,11 @@ chrome.commands.onCommand.addListener((command) => {
 			case "extract-selected":
 			case "extract-highlighted": {
 				// Send message to side panel to trigger extraction
-				chrome.runtime.sendMessage({ type: "KEYBOARD_COMMAND", command });
+				// Use sendMessage with catch to handle case when side panel isn't open yet
+				chrome.runtime.sendMessage({ type: "KEYBOARD_COMMAND", command }).catch((err) => {
+					// If side panel isn't open, this will fail - that's okay
+					console.debug("Background: Could not send message to side panel (may not be open yet):", err);
+				});
 				break;
 			}
 		}
@@ -34,10 +42,40 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 		const controller = new AbortController();
 		const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-		fetch(message.url, { signal: controller.signal })
+		// Prepare headers with API key authentication
+		// Use API key from message (from side panel) or fall back to env var
+		const apiKey = message.apiKey || SUBTITLES_API_KEY;
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+		};
+		if (apiKey) {
+			headers["X-API-Key"] = apiKey;
+		}
+
+		fetch(message.url, {
+			signal: controller.signal,
+			headers,
+		})
 			.then(async (response) => {
 				clearTimeout(timeoutId);
 				console.log("Background: Fetch response status:", response.status);
+
+				// Handle authentication errors before parsing
+				if (response.status === 401) {
+					sendResponse({
+						success: false,
+						error: "Unauthorized: Please check your API key configuration (VITE_SUBTITLES_API_KEY)",
+					});
+					return;
+				}
+				if (response.status === 403) {
+					sendResponse({
+						success: false,
+						error:
+							"Access forbidden: Invalid or missing API key. Please configure VITE_SUBTITLES_API_KEY in your .env file.",
+					});
+					return;
+				}
 
 				// For VTT format, return raw text instead of JSON
 				if (message.format === "vtt") {
