@@ -21,6 +21,11 @@ export interface ExtractedData {
 	url: string;
 	timestamp: string;
 	text: string;
+	contentType?: "html" | "youtube" | "pdf";
+	extractionMethod?: "dom" | "subtitles" | "pdf-text" | "pdf-hybrid";
+	charCount?: number;
+	pageCount?: number;
+	truncated?: boolean;
 }
 
 export interface ExtractionResult {
@@ -92,7 +97,39 @@ export type SubtitleErrorCode =
 	| "API_ERROR"
 	| "PARSE_ERROR"
 	| "NO_SUBTITLES"
-	| "RETRY_EXHAUSTED";
+	| "RETRY_EXHAUSTED"
+	| "PDF_ACCESS_DENIED"
+	| "PDF_UNSUPPORTED"
+	| "PDF_TOO_LARGE"
+	| "OCR_UNAVAILABLE";
+
+export interface PdfExtractionMeta {
+	usedOcr: boolean;
+	truncated: boolean;
+	charCount: number;
+	pageCount: number;
+}
+
+export interface PdfExtractionResponse {
+	title: string;
+	text: string;
+	meta: PdfExtractionMeta;
+}
+
+export interface PdfExtractionOptions {
+	timeoutMs?: number;
+	maxRetries?: number;
+	onRetry?: (attempt: number, error: SubtitleError) => void;
+	signal?: AbortSignal;
+}
+
+export type PdfCandidateSourceType = "remote" | "local" | "viewer" | "unknown";
+
+export interface PdfCandidate {
+	isPdf: boolean;
+	sourceUrl?: string;
+	sourceType: PdfCandidateSourceType;
+}
 
 export class SubtitleError extends Error {
 	public readonly code: SubtitleErrorCode;

@@ -5,6 +5,7 @@ const CACHE_KEY = "mimir_cached_tabs";
 
 const CONTENT_CACHE_PREFIX = "content_";
 const CONTENT_CACHE_TTL = 300000; // 5 minutes
+const MAX_CONTENT_ENTRY_SIZE = 1.5 * 1024 * 1024; // 1.5MB per extracted tab entry
 
 // Chrome storage.session has a 10MB limit. We use 9MB to stay safely under.
 const MAX_CACHE_SIZE = 9 * 1024 * 1024; // 9MB in bytes
@@ -419,6 +420,13 @@ export async function setCachedContent(
 		// Calculate the size of the new entry
 		const entrySize = calculateSize(entry);
 		entry.size = entrySize;
+
+		if (entrySize > MAX_CONTENT_ENTRY_SIZE) {
+			console.debug(
+				`Skipping content cache for tab ${tabId}: entry ${entrySize} bytes exceeds per-entry limit ${MAX_CONTENT_ENTRY_SIZE}`,
+			);
+			return;
+		}
 
 		// Ensure there's enough space before writing
 		await ensureCacheSpace(entrySize);
