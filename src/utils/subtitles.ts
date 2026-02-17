@@ -436,6 +436,14 @@ export function getApiHeaders(): Record<string, string> {
 }
 
 // Fetch through background service worker (more reliable in Manifest V3)
+interface BackgroundFetchResponse {
+	success: boolean;
+	data?: unknown;
+	error?: string;
+	status?: number;
+	statusText?: string;
+}
+
 async function fetchFromBackground(
 	url: string,
 	format: SubtitleExtractionFormat,
@@ -467,48 +475,70 @@ async function fetchFromBackground(
 
 		try {
 			console.log("SidePanel: Sending FETCH_SUBTITLES message to background worker...");
-			chrome.runtime.sendMessage({ type: "FETCH_SUBTITLES", url, format, apiKey: SUBTITLES_API_KEY }, (response) => {
-				clearTimeout(timeoutId);
-				const elapsed = Date.now() - startTime;
-				console.log(`SidePanel: Response received from background in ${elapsed}ms`);
-				console.log("SidePanel: Response:", response);
+			chrome.runtime.sendMessage(
+				{ type: "FETCH_SUBTITLES", url, format, apiKey: SUBTITLES_API_KEY },
+				(response?: BackgroundFetchResponse) => {
+					clearTimeout(timeoutId);
+					const elapsed = Date.now() - startTime;
+					console.log(`SidePanel: Response received from background in ${elapsed}ms`);
+					console.log("SidePanel: Response:", response);
 
-				if (chrome.runtime.lastError) {
-					console.error("SidePanel: chrome.runtime.lastError detected:", chrome.runtime.lastError.message);
-					// Try direct fetch as fallback
-					console.log("SidePanel: Trying direct fetch as fallback...");
-					directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
-					return;
-				}
+					if (chrome.runtime.lastError) {
+						console.error("SidePanel: chrome.runtime.lastError detected:", chrome.runtime.lastError.message);
+						// Try direct fetch as fallback
+						console.log("SidePanel: Trying direct fetch as fallback...");
+						directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
+						return;
+					}
 
-				if (!response) {
-					console.log("SidePanel: No response from background, trying direct fetch...");
-					directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
-					return;
-				}
+					if (!response) {
+						console.log("SidePanel: No response from background, trying direct fetch...");
+						directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
+						return;
+					}
 
-				if (!response.success) {
-					console.log("SidePanel: Background returned error:", response.error);
-					// Try direct fetch as fallback on error
-					console.log("SidePanel: Trying direct fetch as fallback...");
-					directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
-					return;
-				}
+					if (!response.success) {
+						console.log("SidePanel: Background returned error:", response.error);
 
-				console.log("SidePanel: Successfully received subtitle data");
-				// Create a mock Response object for compatibility
-				// For VTT format, response.data is raw text; for JSON/text formats, it's parsed JSON
-				const mockResponse = {
-					ok: true,
-					status: 200,
-					statusText: "OK",
-					json: () => Promise.resolve(response.data),
-					text: () =>
-						Promise.resolve(typeof response.data === "string" ? response.data : JSON.stringify(response.data)),
-				} as unknown as Response;
+						// If background received a real HTTP response, return it directly without a second request.
+						if (typeof response.status === "number") {
+							const errorPayload = response.data ?? {
+								detail: response.error || `API request failed: ${response.status}`,
+							};
+							const mockErrorResponse = {
+								ok: false,
+								status: response.status,
+								statusText: response.statusText || "Error",
+								json: () => Promise.resolve(errorPayload),
+								text: () =>
+									Promise.resolve(typeof errorPayload === "string" ? errorPayload : JSON.stringify(errorPayload)),
+							} as unknown as Response;
 
-				resolve(mockResponse);
-			});
+							resolve(mockErrorResponse);
+							return;
+						}
+
+						// Fall back to direct fetch only for runtime/background transport failures.
+						console.log("SidePanel: Trying direct fetch as fallback...");
+						directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
+						return;
+					}
+
+					console.log("SidePanel: Successfully received subtitle data");
+					// Create a mock Response object for compatibility
+					// For VTT format, response.data is raw text; for JSON/text formats, it's parsed JSON
+					const mockResponse = {
+						ok: true,
+						status: typeof response.status === "number" ? response.status : 200,
+						statusText: response.statusText || "OK",
+						json: () => Promise.resolve(response.data),
+						text: () =>
+							Promise.resolve(typeof response.data === "string" ? response.data : JSON.stringify(response.data)),
+					} as unknown as Response;
+
+					resolve(mockResponse);
+				},
+			);
 		} catch (err) {
 			clearTimeout(timeoutId);
 			console.error("SidePanel: Exception sending message:", err);

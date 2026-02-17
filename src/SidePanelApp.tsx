@@ -24,6 +24,8 @@ import type {
 import { SubtitleError } from "./types";
 import { getCachedContent, setCachedContent } from "./utils/cache";
 import { downloadAsFile, formatExport, getMimeType } from "./utils/exporters";
+import { detectPdfCandidate } from "./utils/pdf";
+import { extractPdfContent } from "./utils/pdfExtraction";
 import { getPageHTML } from "./utils/scripting";
 import { getSubtitleFormatSetting, type SubtitleFormat, setSubtitleFormatSetting } from "./utils/settings";
 import { fetchYoutubeSubtitles } from "./utils/subtitles";
@@ -32,66 +34,37 @@ import { isYouTubeUrl } from "./utils/youtube";
 
 // Pending clipboard data for retry when panel gets focus
 let pendingClipboardData: string | null = null;
-let pendingToastId: string | undefined;
+
+type ClipboardWriteOutcome = "copied" | "requires_manual_copy" | "failed";
 
 /**
  * Safely writes text to clipboard with focus check and user-friendly UX
- * When the document is not focused (e.g., keyboard shortcuts), stores the data
- * and prompts user to click the panel to enable clipboard access.
+ * When the document is not focused (e.g., keyboard shortcuts), stores the data.
  */
-async function safeWriteToClipboard(text: string): Promise<boolean> {
+async function safeWriteToClipboard(text: string): Promise<ClipboardWriteOutcome> {
 	// Check focus before attempting clipboard write
 	if (!document.hasFocus()) {
-		// Store data for retry when panel gains focus
 		pendingClipboardData = text;
-
-		// Show user-friendly toast with clickable action
-		if (pendingToastId) {
-			toast.dismiss(pendingToastId);
-		}
-
-		pendingToastId = toast.error("Click the Copy Now button above to copy your extracted content", {
-			duration: 10000,
-			icon: "📋",
-		});
-
 		console.warn("Clipboard write skipped: document not focused. Data stored for retry on focus.");
-		return false;
+		return "requires_manual_copy";
 	}
 
 	try {
 		await navigator.clipboard.writeText(text);
-		// Clear pending data on success
 		pendingClipboardData = null;
-		if (pendingToastId) {
-			toast.dismiss(pendingToastId);
-			pendingToastId = undefined;
-		}
-		return true;
+		return "copied";
 	} catch (err) {
 		// Check if it's a focus-related error (some browsers throw instead of checking hasFocus)
 		if (
 			err instanceof Error &&
 			(err.name === "NotAllowedError" || err.message.includes("not focused") || err.message.includes("not allowed"))
 		) {
-			// Store data for retry when panel gains focus
 			pendingClipboardData = text;
-
-			// Show user-friendly toast with clickable action
-			if (pendingToastId) {
-				toast.dismiss(pendingToastId);
-			}
-
-			pendingToastId = toast.error("Click the Copy Now button above to copy your extracted content", {
-				duration: 10000,
-				icon: "📋",
-			});
-
 			console.warn("Clipboard write failed: focus required. Data stored for retry on focus.");
-			return false;
+			return "requires_manual_copy";
 		}
-		// For other errors, log and rethrow
-		throw err;
+		console.error("Clipboard write failed:", err);
+		return "failed";
 	}
 }
 
@@ -100,10 +73,6 @@ async function safeWriteToClipboard(text: string): Promise<boolean> {
  */
 function clearPendingClipboard() {
 	pendingClipboardData = null;
-	if (pendingToastId) {
-		toast.dismiss(pendingToastId);
-		pendingToastId = undefined;
-	}
 }
 
 // Custom hook to auto-hide progress bars after cancellation
@@ -140,6 +109,7 @@ async function extractTab(
 		}
 
 		const tabUrl = tab.url;
+		const pdfCandidate = detectPdfCandidate(tabUrl);
 
 		// Check for cancellation before expensive operations
 		if (signal?.aborted) {
@@ -172,6 +142,42 @@ async function extractTab(
 				}
 				const errorInfo = createExtractionError(id, tab, err);
 				console.error(`Failed to extract YouTube subtitles for tab ${id}:`, err);
+				return { result: null, error: errorInfo };
+			}
+		}
+
+		if (pdfCandidate.isPdf) {
+			try {
+				const sourceUrl = pdfCandidate.sourceUrl || tabUrl;
+				const { title, text, meta } = await extractPdfContent(sourceUrl, {
+					timeoutMs: 60000,
+					signal,
+					onRetry: (attempt, err) => {
+						console.warn(`PDF retry ${attempt} for ${sourceUrl}:`, err.message);
+					},
+				});
+
+				return {
+					result: {
+						id,
+						timestamp: new Date().toISOString(),
+						title,
+						url: tabUrl,
+						text,
+						contentType: "pdf",
+						extractionMethod: meta.usedOcr ? "pdf-hybrid" : "pdf-text",
+						charCount: meta.charCount,
+						pageCount: meta.pageCount,
+						truncated: meta.truncated,
+					},
+					error: null,
+				};
+			} catch (err) {
+				if (signal?.aborted) {
+					return { result: null, error: null };
+				}
+				const errorInfo = createExtractionError(id, tab, err);
+				console.error(`Failed to extract PDF text for tab ${id}:`, err);
 				return { result: null, error: errorInfo };
 			}
 		}
@@ -219,6 +225,8 @@ async function extractTab(
 				title: result.title,
 				url: result.url,
 				text: result.text,
+				contentType: "html",
+				extractionMethod: "dom",
 			},
 			error: null,
 		};
@@ -282,6 +290,7 @@ function extractTabsConcurrent(
 ): Promise<{ results: ExtractedData[]; errors: ExtractionErrorInfo[]; cancelled: boolean }> {
 	const CONCURRENCY_LIMIT = 3;
 	const NON_YOUTUBE_TAB_TIMEOUT = 15000; // 15 seconds for non-YouTube content
+	const PDF_TAB_TIMEOUT = 60000; // 60 seconds for PDF extraction pipeline
 
 	return new Promise((resolve) => {
 		const results: ExtractedData[] = [];
@@ -326,12 +335,14 @@ function extractTabsConcurrent(
 			let currentTabTitle = "Untitled";
 			let currentTabUrl = "unknown";
 			let isYoutube = false;
+			let isPdf = false;
 
 			try {
 				const tab = await chrome.tabs.get(tabId);
 				currentTabTitle = tab.title || "Untitled";
 				currentTabUrl = tab.url || "unknown";
 				isYoutube = tab.url ? isYouTubeUrl(tab.url) : false;
+				isPdf = tab.url ? detectPdfCandidate(tab.url).isPdf : false;
 			} catch {
 				// Tab might be closed
 			}
@@ -345,10 +356,11 @@ function extractTabsConcurrent(
 			});
 
 			try {
-				// Only apply timeout for non-YouTube content (YouTube has its own 100s API timeout)
+				// Only apply timeout for non-YouTube content (YouTube has its own longer timeout path)
 				let combinedSignal: AbortSignal | undefined = signal;
 				if (!isYoutube) {
-					const timeoutSignal = AbortSignal.timeout(NON_YOUTUBE_TAB_TIMEOUT);
+					const timeoutMs = isPdf ? PDF_TAB_TIMEOUT : NON_YOUTUBE_TAB_TIMEOUT;
+					const timeoutSignal = AbortSignal.timeout(timeoutMs);
 					combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 				}
 
@@ -362,7 +374,9 @@ function extractTabsConcurrent(
 							url: currentTabUrl,
 							title: currentTabTitle,
 							errorCode: "TIMEOUT",
-							userMessage: "Extraction timed out after 15 seconds",
+							userMessage: isPdf
+								? "PDF extraction timed out after 60 seconds"
+								: "Extraction timed out after 15 seconds",
 						});
 						failed++;
 					}
@@ -502,11 +516,9 @@ export function SidePanelApp() {
 			if (pendingClipboardData) {
 				try {
 					await navigator.clipboard.writeText(pendingClipboardData);
-					pendingClipboardData = null;
-					if (pendingToastId) {
-						toast.dismiss(pendingToastId);
-						pendingToastId = undefined;
-					}
+					clearPendingClipboard();
+					setPendingClipboardContent(null);
+					setShowManualCopyButton(false);
 					toast.success("Copied to clipboard!", { id: "clipboard-auto-success" });
 				} catch (err) {
 					console.warn("Auto-retry clipboard failed:", err);
@@ -576,9 +588,43 @@ export function SidePanelApp() {
 		saveSubtitleFormat();
 	}, [subtitleFormat]);
 
+	const resetClipboardFallbackState = useCallback(() => {
+		clearPendingClipboard();
+		setPendingClipboardContent(null);
+		setShowManualCopyButton(false);
+	}, []);
+
+	const copyExtractedResultsToClipboard = useCallback(
+		async (results: ExtractedData[]): Promise<ClipboardWriteOutcome> => {
+			if (results.length === 0) {
+				resetClipboardFallbackState();
+				return "copied";
+			}
+
+			const serializedResults = JSON.stringify(results, null, 2);
+			const outcome = await safeWriteToClipboard(serializedResults);
+
+			if (outcome === "requires_manual_copy") {
+				setPendingClipboardContent(serializedResults);
+				setShowManualCopyButton(true);
+				return outcome;
+			}
+
+			resetClipboardFallbackState();
+
+			if (outcome === "failed") {
+				toast.error("Failed to copy to clipboard");
+			}
+
+			return outcome;
+		},
+		[resetClipboardFallbackState],
+	);
+
 	const handleExtract = useCallback(async () => {
 		const selectedIds = getSelectedIdsAsArray();
 		if (selectedIds.length === 0) return;
+		resetClipboardFallbackState();
 
 		// Create abort controller for this extraction
 		const controller = new AbortController();
@@ -603,7 +649,7 @@ export function SidePanelApp() {
 			const { results, errors, cancelled } = await extractTabsConcurrent(
 				selectedIds,
 				controller.signal,
-				"json",
+				subtitleFormat,
 				(update) => {
 					setExtractionProgress((prev) =>
 						prev
@@ -623,16 +669,9 @@ export function SidePanelApp() {
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
-			let clipboardSuccess = false;
+			let clipboardOutcome: ClipboardWriteOutcome = "copied";
 			if (validResults.length > 0) {
-				const jsonString = JSON.stringify(validResults, null, 2);
-				clipboardSuccess = await safeWriteToClipboard(jsonString);
-
-				// Show manual copy button if clipboard failed
-				if (!clipboardSuccess) {
-					setPendingClipboardContent(jsonString);
-					setShowManualCopyButton(true);
-				}
+				clipboardOutcome = await copyExtractedResultsToClipboard(validResults);
 
 				// ALWAYS save to history regardless of clipboard success (as long as not cancelled)
 				if (!cancelled) {
@@ -650,19 +689,11 @@ export function SidePanelApp() {
 
 			if (cancelled) {
 				setExtractionStatus("idle");
-				if (clipboardSuccess) {
+				if (clipboardOutcome === "copied" && validResults.length > 0) {
 					toast.success(
 						`Cancelled. ${validResults.length} tab${validResults.length === 1 ? "" : "s"} copied to clipboard.`,
 						{
 							icon: "⚠️",
-						},
-					);
-				} else if (validResults.length > 0) {
-					toast(
-						`Cancelled. Extracted ${validResults.length} tab${validResults.length === 1 ? "" : "s"} - click the toast above to copy.`,
-						{
-							icon: "⚠️",
-							duration: 5000,
 						},
 					);
 				}
@@ -676,17 +707,9 @@ export function SidePanelApp() {
 				});
 			} else {
 				setExtractionStatus("success");
-				if (clipboardSuccess) {
+				if (clipboardOutcome === "copied") {
 					toast.success(
 						`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
-					);
-				} else {
-					toast(
-						`Extracted ${validResults.length} tab${validResults.length > 1 ? "s" : ""} - click the toast above to copy.`,
-						{
-							icon: "⚠️",
-							duration: 5000,
-						},
 					);
 				}
 				setTimeout(() => {
@@ -704,7 +727,15 @@ export function SidePanelApp() {
 			setExtractionProgress(null);
 			setAbortController(null);
 		}
-	}, [getSelectedIdsAsArray, history, closeTabsEnabled, clearSelection]);
+	}, [
+		getSelectedIdsAsArray,
+		resetClipboardFallbackState,
+		subtitleFormat,
+		copyExtractedResultsToClipboard,
+		history,
+		closeTabsEnabled,
+		clearSelection,
+	]);
 
 	const handleCancelExtraction = useCallback(() => {
 		abortController?.abort();
@@ -726,6 +757,7 @@ export function SidePanelApp() {
 		const tabIds = tabsToRight.map((t) => t.id);
 
 		if (tabIds.length === 0) return;
+		resetClipboardFallbackState();
 
 		// Create abort controller for this extraction
 		const controller = new AbortController();
@@ -750,7 +782,7 @@ export function SidePanelApp() {
 			const { results, errors, cancelled } = await extractTabsConcurrent(
 				tabIds,
 				controller.signal,
-				"json",
+				subtitleFormat,
 				(update) => {
 					setToRightExtractionProgress((prev) =>
 						prev
@@ -770,16 +802,9 @@ export function SidePanelApp() {
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
-			let clipboardSuccess = false;
+			let clipboardOutcome: ClipboardWriteOutcome = "copied";
 			if (validResults.length > 0) {
-				const jsonString = JSON.stringify(validResults, null, 2);
-				clipboardSuccess = await safeWriteToClipboard(jsonString);
-
-				// Show manual copy button if clipboard failed
-				if (!clipboardSuccess) {
-					setPendingClipboardContent(jsonString);
-					setShowManualCopyButton(true);
-				}
+				clipboardOutcome = await copyExtractedResultsToClipboard(validResults);
 
 				// ALWAYS save to history regardless of clipboard success (as long as not cancelled)
 				if (!cancelled) {
@@ -797,19 +822,11 @@ export function SidePanelApp() {
 
 			if (cancelled) {
 				setToRightExtractionStatus("idle");
-				if (clipboardSuccess) {
+				if (clipboardOutcome === "copied" && validResults.length > 0) {
 					toast.success(
 						`Cancelled. ${validResults.length} tab${validResults.length === 1 ? "" : "s"} copied to clipboard.`,
 						{
 							icon: "⚠️",
-						},
-					);
-				} else if (validResults.length > 0) {
-					toast(
-						`Cancelled. Extracted ${validResults.length} tab${validResults.length === 1 ? "" : "s"} - click the toast above to copy.`,
-						{
-							icon: "⚠️",
-							duration: 5000,
 						},
 					);
 				}
@@ -823,17 +840,9 @@ export function SidePanelApp() {
 				});
 			} else {
 				setToRightExtractionStatus("success");
-				if (clipboardSuccess) {
+				if (clipboardOutcome === "copied") {
 					toast.success(
 						`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
-					);
-				} else {
-					toast(
-						`Extracted ${validResults.length} tab${validResults.length > 1 ? "s" : ""} - click the toast above to copy.`,
-						{
-							icon: "⚠️",
-							duration: 5000,
-						},
 					);
 				}
 				setTimeout(() => {
@@ -851,12 +860,20 @@ export function SidePanelApp() {
 			setToRightExtractionProgress(null);
 			setToRightAbortController(null);
 		}
-	}, [history, closeTabsEnabled, clearSelection]);
+	}, [
+		resetClipboardFallbackState,
+		subtitleFormat,
+		copyExtractedResultsToClipboard,
+		history,
+		closeTabsEnabled,
+		clearSelection,
+	]);
 
 	const handleExtractHighlighted = useCallback(async () => {
 		const tabIds = highlightedTabs.map((t) => t.id);
 
 		if (tabIds.length === 0) return;
+		resetClipboardFallbackState();
 
 		// Create abort controller for this extraction
 		const controller = new AbortController();
@@ -881,7 +898,7 @@ export function SidePanelApp() {
 			const { results, errors, cancelled } = await extractTabsConcurrent(
 				tabIds,
 				controller.signal,
-				"json",
+				subtitleFormat,
 				(update) => {
 					setHighlightedExtractionProgress((prev) =>
 						prev
@@ -901,16 +918,9 @@ export function SidePanelApp() {
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
-			let clipboardSuccess = false;
+			let clipboardOutcome: ClipboardWriteOutcome = "copied";
 			if (validResults.length > 0) {
-				const jsonString = JSON.stringify(validResults, null, 2);
-				clipboardSuccess = await safeWriteToClipboard(jsonString);
-
-				// Show manual copy button if clipboard failed
-				if (!clipboardSuccess) {
-					setPendingClipboardContent(jsonString);
-					setShowManualCopyButton(true);
-				}
+				clipboardOutcome = await copyExtractedResultsToClipboard(validResults);
 
 				// ALWAYS save to history regardless of clipboard success (as long as not cancelled)
 				if (!cancelled) {
@@ -928,19 +938,11 @@ export function SidePanelApp() {
 
 			if (cancelled) {
 				setHighlightedExtractionStatus("idle");
-				if (clipboardSuccess) {
+				if (clipboardOutcome === "copied" && validResults.length > 0) {
 					toast.success(
 						`Cancelled. ${validResults.length} tab${validResults.length === 1 ? "" : "s"} copied to clipboard.`,
 						{
 							icon: "⚠️",
-						},
-					);
-				} else if (validResults.length > 0) {
-					toast(
-						`Cancelled. Extracted ${validResults.length} tab${validResults.length === 1 ? "" : "s"} - click the toast above to copy.`,
-						{
-							icon: "⚠️",
-							duration: 5000,
 						},
 					);
 				}
@@ -954,17 +956,9 @@ export function SidePanelApp() {
 				});
 			} else {
 				setHighlightedExtractionStatus("success");
-				if (clipboardSuccess) {
+				if (clipboardOutcome === "copied") {
 					toast.success(
 						`Extracted content from ${validResults.length} tab${validResults.length > 1 ? "s" : ""} and copied to clipboard`,
-					);
-				} else {
-					toast(
-						`Extracted ${validResults.length} tab${validResults.length > 1 ? "s" : ""} - click the toast above to copy.`,
-						{
-							icon: "⚠️",
-							duration: 5000,
-						},
 					);
 				}
 				setTimeout(() => {
@@ -982,7 +976,15 @@ export function SidePanelApp() {
 			setHighlightedExtractionProgress(null);
 			setHighlightedAbortController(null);
 		}
-	}, [highlightedTabs, history, closeTabsEnabled, clearSelection]);
+	}, [
+		highlightedTabs,
+		resetClipboardFallbackState,
+		subtitleFormat,
+		copyExtractedResultsToClipboard,
+		history,
+		closeTabsEnabled,
+		clearSelection,
+	]);
 
 	// Export & History handlers
 	const handleOpenHistory = useCallback(() => {
@@ -1019,20 +1021,28 @@ export function SidePanelApp() {
 		[history],
 	);
 
-	const handleCopy = useCallback(async (data: ExtractedData[], format: ExportFormat) => {
-		try {
-			const formatted = formatExport(data, format);
-			const success = await safeWriteToClipboard(formatted);
-			if (success) {
-				toast.success("Copied to clipboard");
-			} else {
-				toast.error("Clipboard unavailable. Please click on the side panel first to focus it, then try again.");
+	const handleCopy = useCallback(
+		async (data: ExtractedData[], format: ExportFormat) => {
+			try {
+				const formatted = formatExport(data, format);
+				const outcome = await safeWriteToClipboard(formatted);
+				if (outcome === "copied") {
+					resetClipboardFallbackState();
+					toast.success("Copied to clipboard");
+				} else if (outcome === "requires_manual_copy") {
+					setPendingClipboardContent(formatted);
+					setShowManualCopyButton(true);
+				} else {
+					resetClipboardFallbackState();
+					toast.error("Failed to copy to clipboard");
+				}
+			} catch (err) {
+				console.error("Copy to clipboard failed:", err);
+				toast.error("Failed to copy to clipboard");
 			}
-		} catch (err) {
-			console.error("Copy to clipboard failed:", err);
-			toast.error("Failed to copy to clipboard");
-		}
-	}, []);
+		},
+		[resetClipboardFallbackState],
+	);
 
 	// Handler for manual copy button (when clipboard is unavailable due to focus)
 	const handleManualCopy = useCallback(async () => {

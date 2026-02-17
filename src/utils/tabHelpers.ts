@@ -1,4 +1,5 @@
 import type { ChromeTab } from "../types";
+import { shouldFilterTabUrl } from "./pdf";
 
 /**
  * Gets all tabs positioned to the right of the currently active tab
@@ -22,13 +23,7 @@ export async function getTabsToRight(): Promise<ChromeTab[]> {
 		// Filter and map tabs to the right of active tab
 		const tabsToRight = allTabs.filter(
 			(tab): tab is chrome.tabs.Tab & { id: number; url: string } =>
-				tab.index > activeTab.index &&
-				tab.id !== undefined &&
-				tab.url !== undefined &&
-				!tab.url.startsWith("chrome://") &&
-				!tab.url.startsWith("chrome-extension://") &&
-				!tab.url.startsWith("edge://") &&
-				!tab.url.startsWith("about:"),
+				tab.index > activeTab.index && tab.id !== undefined && tab.url !== undefined && !shouldFilterTabUrl(tab.url),
 		);
 
 		return tabsToRight.map((tab) => ({
@@ -67,12 +62,7 @@ export async function getHighlightedTabs(): Promise<ChromeTab[]> {
 		return highlightedTabs
 			.filter(
 				(tab): tab is chrome.tabs.Tab & { id: number; url: string } =>
-					tab.id !== undefined &&
-					tab.url !== undefined &&
-					!tab.url.startsWith("chrome://") &&
-					!tab.url.startsWith("chrome-extension://") &&
-					!tab.url.startsWith("edge://") &&
-					!tab.url.startsWith("about:"),
+					tab.id !== undefined && tab.url !== undefined && !shouldFilterTabUrl(tab.url),
 			)
 			.map((tab) => ({
 				id: tab.id,

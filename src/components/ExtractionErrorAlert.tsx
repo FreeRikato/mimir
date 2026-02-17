@@ -9,7 +9,16 @@ interface ExtractionErrorAlertProps {
 export function ExtractionErrorAlert({ errors, onDismiss }: ExtractionErrorAlertProps) {
 	if (errors.length === 0) return null;
 
-	const hasYouTubeErrors = errors.some((e) => e.url.includes("youtube.com"));
+	const isYouTubeError = (error: ExtractionErrorInfo): boolean =>
+		error.url.includes("youtube.com") || error.url.includes("youtu.be");
+	const hasYouTubeNoTranscriptErrors = errors.some((e) => isYouTubeError(e) && e.errorCode === "NO_SUBTITLES");
+	const hasYouTubeBackendErrors = errors.some(
+		(e) => isYouTubeError(e) && (e.errorCode === "NETWORK_ERROR" || e.errorCode === "SERVER_ERROR"),
+	);
+	const hasPdfAccessErrors = errors.some((e) => e.errorCode === "PDF_ACCESS_DENIED");
+	const hasPdfUnsupportedErrors = errors.some((e) => e.errorCode === "PDF_UNSUPPORTED");
+	const hasPdfTooLargeErrors = errors.some((e) => e.errorCode === "PDF_TOO_LARGE");
+	const hasPdfOcrErrors = errors.some((e) => e.errorCode === "OCR_UNAVAILABLE");
 
 	return (
 		<div className="glass-heavy border border-red-500/30 rounded-lg p-3 mb-3">
@@ -25,9 +34,39 @@ export function ExtractionErrorAlert({ errors, onDismiss }: ExtractionErrorAlert
 				</button>
 			</div>
 
-			{hasYouTubeErrors && (
+			{hasYouTubeNoTranscriptErrors && (
+				<p className="text-xs text-glass-muted mb-2">
+					No transcript found for the requested language for one or more YouTube videos.
+				</p>
+			)}
+
+			{hasYouTubeBackendErrors && (
 				<p className="text-xs text-glass-muted mb-2">
 					Backend server may be down. Ensure the subtitle service is configured correctly.
+				</p>
+			)}
+
+			{hasPdfAccessErrors && (
+				<p className="text-xs text-glass-muted mb-2">
+					Local PDF access failed. Enable "Allow access to file URLs" for this extension in chrome://extensions.
+				</p>
+			)}
+
+			{hasPdfUnsupportedErrors && (
+				<p className="text-xs text-glass-muted mb-2">
+					One or more PDFs could not be parsed by the backend extraction pipeline.
+				</p>
+			)}
+
+			{hasPdfTooLargeErrors && (
+				<p className="text-xs text-glass-muted mb-2">
+					One or more PDFs exceeded the configured backend size/page limits.
+				</p>
+			)}
+
+			{hasPdfOcrErrors && (
+				<p className="text-xs text-glass-muted mb-2">
+					OCR fallback is currently unavailable. Try again after backend OCR service recovery.
 				</p>
 			)}
 

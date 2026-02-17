@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChromeTab, DomainGroup } from "../types";
 import { CACHE_TTL, getCachedTabs, removeExpiredContentCache, setCachedTabs } from "../utils/cache";
 import { clearGroupTabsCache, groupTabs } from "../utils/domainHelpers";
+import { shouldFilterTabUrl } from "../utils/pdf";
 
 const DEBOUNCE_DELAY = 500; // 500ms debounce for tab events
 
@@ -59,12 +60,7 @@ export function useTabs() {
 				const validTabs: ChromeTab[] = tabs
 					.filter(
 						(tab): tab is chrome.tabs.Tab & { id: number; url: string } =>
-							tab.id !== undefined &&
-							tab.url !== undefined &&
-							!tab.url.startsWith("chrome://") &&
-							!tab.url.startsWith("chrome-extension://") &&
-							!tab.url.startsWith("edge://") &&
-							!tab.url.startsWith("about:"),
+							tab.id !== undefined && tab.url !== undefined && !shouldFilterTabUrl(tab.url),
 					)
 					.map((tab) => ({
 						id: tab.id,
