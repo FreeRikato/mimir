@@ -26,10 +26,12 @@ import { getCachedContent, setCachedContent } from "./utils/cache";
 import { downloadAsFile, formatExport, getMimeType } from "./utils/exporters";
 import { detectPdfCandidate } from "./utils/pdf";
 import { extractPdfContent } from "./utils/pdfExtraction";
+import { fetchRedditPost, isRedditPostUrl } from "./utils/reddit";
 import { getPageHTML } from "./utils/scripting";
 import { getSubtitleFormatSetting, type SubtitleFormat, setSubtitleFormatSetting } from "./utils/settings";
 import { fetchYoutubeSubtitles } from "./utils/subtitles";
 import { closeTabsSafely, getTabsToRight } from "./utils/tabHelpers";
+import { formatXThread, isXTweetUrl, parseXTweetId, readXDataFromPage } from "./utils/xTwitter";
 import { isYouTubeUrl } from "./utils/youtube";
 
 // Pending clipboard data for retry when panel gets focus
@@ -142,6 +144,76 @@ async function extractTab(
 				}
 				const errorInfo = createExtractionError(id, tab, err);
 				console.error(`Failed to extract YouTube subtitles for tab ${id}:`, err);
+				return { result: null, error: errorInfo };
+			}
+		}
+
+		if (isRedditPostUrl(tabUrl)) {
+			try {
+				const { title, text } = await fetchRedditPost(tabUrl, { signal });
+				return {
+					result: {
+						id,
+						timestamp: new Date().toISOString(),
+						title,
+						url: tabUrl,
+						text,
+						contentType: "reddit",
+						extractionMethod: "reddit-api",
+					},
+					error: null,
+				};
+			} catch (err) {
+				if (signal?.aborted) {
+					return { result: null, error: null };
+				}
+				const errorInfo = createExtractionError(id, tab, err);
+				console.error(`Failed to extract Reddit post for tab ${id}:`, err);
+				return { result: null, error: errorInfo };
+			}
+		}
+
+		if (isXTweetUrl(tabUrl)) {
+			try {
+				const tweetId = parseXTweetId(tabUrl);
+				if (!tweetId) throw new SubtitleError("Could not parse tweet ID from URL", "INVALID_URL", undefined, tabUrl);
+
+				const injection = await chrome.scripting.executeScript({
+					target: { tabId: id },
+					world: "MAIN",
+					func: readXDataFromPage,
+					args: [tweetId],
+				});
+
+				const rawData = injection[0]?.result ?? null;
+				if (!rawData) {
+					throw new SubtitleError(
+						"Tweet data not captured yet. Make sure the page is fully loaded, then try again. If the problem persists, refresh the tab.",
+						"PARSE_ERROR",
+						undefined,
+						tabUrl,
+					);
+				}
+
+				const { title, text } = formatXThread(rawData, tweetId);
+				return {
+					result: {
+						id,
+						timestamp: new Date().toISOString(),
+						title,
+						url: tabUrl,
+						text,
+						contentType: "twitter",
+						extractionMethod: "graphql-intercept",
+					},
+					error: null,
+				};
+			} catch (err) {
+				if (signal?.aborted) {
+					return { result: null, error: null };
+				}
+				const errorInfo = createExtractionError(id, tab, err);
+				console.error(`Failed to extract X/Twitter tweet for tab ${id}:`, err);
 				return { result: null, error: errorInfo };
 			}
 		}
@@ -291,6 +363,8 @@ function extractTabsConcurrent(
 	const CONCURRENCY_LIMIT = 3;
 	const NON_YOUTUBE_TAB_TIMEOUT = 15000; // 15 seconds for non-YouTube content
 	const PDF_TAB_TIMEOUT = 60000; // 60 seconds for PDF extraction pipeline
+	const REDDIT_TAB_TIMEOUT = 45000; // 45 seconds for Reddit API + morechildren calls
+	const X_TAB_TIMEOUT = 15000; // 15 seconds — just an executeScript read, should be instant
 
 	return new Promise((resolve) => {
 		const results: ExtractedData[] = [];
@@ -336,6 +410,8 @@ function extractTabsConcurrent(
 			let currentTabUrl = "unknown";
 			let isYoutube = false;
 			let isPdf = false;
+			let isReddit = false;
+			let isX = false;
 
 			try {
 				const tab = await chrome.tabs.get(tabId);
@@ -343,6 +419,8 @@ function extractTabsConcurrent(
 				currentTabUrl = tab.url || "unknown";
 				isYoutube = tab.url ? isYouTubeUrl(tab.url) : false;
 				isPdf = tab.url ? detectPdfCandidate(tab.url).isPdf : false;
+				isReddit = tab.url ? isRedditPostUrl(tab.url) : false;
+				isX = tab.url ? isXTweetUrl(tab.url) : false;
 			} catch {
 				// Tab might be closed
 			}
@@ -359,7 +437,13 @@ function extractTabsConcurrent(
 				// Only apply timeout for non-YouTube content (YouTube has its own longer timeout path)
 				let combinedSignal: AbortSignal | undefined = signal;
 				if (!isYoutube) {
-					const timeoutMs = isPdf ? PDF_TAB_TIMEOUT : NON_YOUTUBE_TAB_TIMEOUT;
+					const timeoutMs = isPdf
+						? PDF_TAB_TIMEOUT
+						: isReddit
+							? REDDIT_TAB_TIMEOUT
+							: isX
+								? X_TAB_TIMEOUT
+								: NON_YOUTUBE_TAB_TIMEOUT;
 					const timeoutSignal = AbortSignal.timeout(timeoutMs);
 					combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 				}
@@ -376,7 +460,11 @@ function extractTabsConcurrent(
 							errorCode: "TIMEOUT",
 							userMessage: isPdf
 								? "PDF extraction timed out after 60 seconds"
-								: "Extraction timed out after 15 seconds",
+								: isReddit
+									? "Reddit extraction timed out after 45 seconds"
+									: isX
+										? "X/Twitter extraction timed out after 15 seconds"
+										: "Extraction timed out after 15 seconds",
 						});
 						failed++;
 					}

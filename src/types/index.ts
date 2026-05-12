@@ -21,8 +21,8 @@ export interface ExtractedData {
 	url: string;
 	timestamp: string;
 	text: string;
-	contentType?: "html" | "youtube" | "pdf";
-	extractionMethod?: "dom" | "subtitles" | "pdf-text" | "pdf-hybrid";
+	contentType?: "html" | "youtube" | "pdf" | "reddit" | "twitter";
+	extractionMethod?: "dom" | "subtitles" | "pdf-text" | "pdf-hybrid" | "reddit-api" | "graphql-intercept";
 	charCount?: number;
 	pageCount?: number;
 	truncated?: boolean;

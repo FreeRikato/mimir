@@ -13,6 +13,14 @@
 		"default_title": "Mimir"
 	},
 	"permissions": ["scripting", "activeTab", "storage", "sidePanel", "tabs", "clipboardWrite"],
+	"content_scripts": [
+		{
+			"matches": ["https://x.com/*", "https://twitter.com/*"],
+			"js": ["src/content/xTwitter.ts"],
+			"run_at": "document_start",
+			"world": "MAIN"
+		}
+	],
 	"host_permissions": [
 		"<all_urls>",
 		"http://localhost/*",
