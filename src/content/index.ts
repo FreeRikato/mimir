@@ -1,5 +1,12 @@
 console.log("Mimir content script loaded");
 
+// PDF pages are handled by the background worker + PDF.js pipeline.
+// The content script cannot access the native PDF viewer's content, so bail out early.
+if (document.contentType === "application/pdf") {
+	// Nothing to do — extraction is triggered from the side panel via FETCH_PDF_BYTES.
+	throw new Error("Mimir: PDF page, skipping content script injection.");
+}
+
 // Content script example: Inject a floating action button
 const createActionButton = () => {
 	const button = document.createElement("button");

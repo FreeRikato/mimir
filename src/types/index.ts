@@ -101,7 +101,8 @@ export type SubtitleErrorCode =
 	| "PDF_ACCESS_DENIED"
 	| "PDF_UNSUPPORTED"
 	| "PDF_TOO_LARGE"
-	| "OCR_UNAVAILABLE";
+	| "OCR_UNAVAILABLE"
+	| "PDF_FILE_UPLOAD_REQUIRED";
 
 export interface PdfExtractionMeta {
 	usedOcr: boolean;

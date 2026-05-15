@@ -158,6 +158,38 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 		return true; // Keep channel open for async response
 	}
 
+	if (message.type === "FETCH_PDF_BYTES") {
+		const pdfUrl = typeof message.url === "string" ? message.url : "";
+		if (!pdfUrl) {
+			sendResponse({ success: false, error: "Missing URL" });
+			return true;
+		}
+
+		const FETCH_TIMEOUT_MS = 60000;
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+		fetch(pdfUrl, { signal: controller.signal })
+			.then(async (response) => {
+				clearTimeout(timeoutId);
+				if (!response.ok) {
+					sendResponse({ success: false, status: response.status, error: `HTTP ${response.status}` });
+					return;
+				}
+				const buffer = await response.arrayBuffer();
+				sendResponse({ success: true, buffer });
+			})
+			.catch((err) => {
+				clearTimeout(timeoutId);
+				if (err instanceof Error && err.name === "AbortError") {
+					sendResponse({ success: false, error: "Request timed out" });
+				} else {
+					sendResponse({ success: false, error: err instanceof Error ? err.message : "Fetch failed" });
+				}
+			});
+		return true;
+	}
+
 	if (message.type === "EXTRACT_PDF") {
 		const pdfUrl = typeof message.url === "string" ? message.url : "";
 		const apiUrl = typeof message.apiUrl === "string" ? message.apiUrl : "";

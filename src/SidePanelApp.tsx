@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { DomainGroup } from "./components/DomainGroup";
 import { ExtractionErrorAlert } from "./components/ExtractionErrorAlert";
+import { PdfUpload } from "./components/PdfUpload";
 import { ExtractionProgressDisplay } from "./components/ExtractionProgress";
 import { Footer } from "./components/Footer";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -26,6 +27,7 @@ import { getCachedContent, setCachedContent } from "./utils/cache";
 import { downloadAsFile, formatExport, getMimeType } from "./utils/exporters";
 import { detectPdfCandidate } from "./utils/pdf";
 import { extractPdfContent } from "./utils/pdfExtraction";
+import { extractTextFromBuffer, extractTextFromFile } from "./utils/pdfExtractor";
 import { fetchRedditPost, isRedditPostUrl } from "./utils/reddit";
 import { getPageHTML } from "./utils/scripting";
 import { getSubtitleFormatSetting, type SubtitleFormat, setSubtitleFormatSetting } from "./utils/settings";
@@ -219,13 +221,76 @@ async function extractTab(
 		}
 
 		if (pdfCandidate.isPdf) {
+			const sourceUrl = pdfCandidate.sourceUrl || tabUrl;
+
+			// Local file:// PDFs cannot be fetched without user granting file access.
+			// Return a sentinel error so the UI can show an upload prompt.
+			if (pdfCandidate.sourceType === "local") {
+				return {
+					result: null,
+					error: {
+						tabId: id,
+						url: tabUrl,
+						title: tab.title || "Untitled PDF",
+						errorCode: "PDF_FILE_UPLOAD_REQUIRED",
+						userMessage: "Local PDF — upload the file to extract text.",
+					},
+				};
+			}
+
+			// Remote PDF: try PDF.js (client-side, no backend needed) first.
+			if (signal?.aborted) return { result: null, error: null };
+
 			try {
-				const sourceUrl = pdfCandidate.sourceUrl || tabUrl;
+				const bgResponse = await new Promise<{ success: boolean; buffer?: ArrayBuffer; error?: string }>(
+					(resolve) => {
+						chrome.runtime.sendMessage({ type: "FETCH_PDF_BYTES", url: sourceUrl }, resolve);
+					},
+				);
+
+				if (signal?.aborted) return { result: null, error: null };
+
+				if (bgResponse?.success && bgResponse.buffer) {
+					const { text, pageCount, isScanned } = await extractTextFromBuffer(bgResponse.buffer);
+
+					if (!text.trim()) {
+						throw new SubtitleError("No text found in PDF", "PDF_UNSUPPORTED", undefined, sourceUrl);
+					}
+
+					if (signal?.aborted) return { result: null, error: null };
+
+					return {
+						result: {
+							id,
+							timestamp: new Date().toISOString(),
+							title: tab.title || "PDF",
+							url: tabUrl,
+							text: isScanned
+								? `[Warning: This PDF appears to be scanned or image-based. Text may be incomplete.]\n\n${text}`
+								: text,
+							contentType: "pdf",
+							extractionMethod: "pdf-text",
+							charCount: text.length,
+							pageCount,
+						},
+						error: null,
+					};
+				}
+
+				// PDF.js fetch failed — fall through to backend
+				console.warn(`PDF.js fetch failed for ${sourceUrl}: ${bgResponse?.error}. Trying backend.`);
+			} catch (pdfJsErr) {
+				if (signal?.aborted) return { result: null, error: null };
+				console.warn(`PDF.js extraction failed for ${sourceUrl}:`, pdfJsErr, "Trying backend.");
+			}
+
+			// Backend fallback
+			try {
 				const { title, text, meta } = await extractPdfContent(sourceUrl, {
 					timeoutMs: 60000,
 					signal,
 					onRetry: (attempt, err) => {
-						console.warn(`PDF retry ${attempt} for ${sourceUrl}:`, err.message);
+						console.warn(`PDF backend retry ${attempt} for ${sourceUrl}:`, err.message);
 					},
 				});
 
@@ -245,11 +310,9 @@ async function extractTab(
 					error: null,
 				};
 			} catch (err) {
-				if (signal?.aborted) {
-					return { result: null, error: null };
-				}
+				if (signal?.aborted) return { result: null, error: null };
 				const errorInfo = createExtractionError(id, tab, err);
-				console.error(`Failed to extract PDF text for tab ${id}:`, err);
+				console.error(`Failed to extract PDF for tab ${id}:`, err);
 				return { result: null, error: errorInfo };
 			}
 		}
@@ -590,6 +653,11 @@ export function SidePanelApp() {
 	const [showManualCopyButton, setShowManualCopyButton] = useState(false);
 	const [pendingClipboardContent, setPendingClipboardContent] = useState<string | null>(null);
 
+	// State for PDF upload fallback prompt
+	const [pdfUploadRequest, setPdfUploadRequest] = useState<{ tabId: number; tabTitle: string; tabUrl: string } | null>(
+		null,
+	);
+
 	useEffect(() => {
 		isMountedRef.current = true;
 		return () => {
@@ -709,6 +777,14 @@ export function SidePanelApp() {
 		[resetClipboardFallbackState],
 	);
 
+	// Show upload prompt for the first PDF tab that needs it
+	const checkAndPromptPdfUpload = useCallback((errors: ExtractionErrorInfo[]) => {
+		const uploadRequired = errors.find((e) => e.errorCode === "PDF_FILE_UPLOAD_REQUIRED");
+		if (uploadRequired) {
+			setPdfUploadRequest({ tabId: uploadRequired.tabId, tabTitle: uploadRequired.title, tabUrl: uploadRequired.url });
+		}
+	}, []);
+
 	const handleExtract = useCallback(async () => {
 		const selectedIds = getSelectedIdsAsArray();
 		if (selectedIds.length === 0) return;
@@ -754,6 +830,7 @@ export function SidePanelApp() {
 			);
 
 			setExtractionErrors(errors);
+			checkAndPromptPdfUpload(errors);
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
@@ -823,6 +900,7 @@ export function SidePanelApp() {
 		history,
 		closeTabsEnabled,
 		clearSelection,
+		checkAndPromptPdfUpload,
 	]);
 
 	const handleCancelExtraction = useCallback(() => {
@@ -887,6 +965,7 @@ export function SidePanelApp() {
 			);
 
 			setToRightExtractionErrors(errors);
+			checkAndPromptPdfUpload(errors);
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
@@ -955,6 +1034,7 @@ export function SidePanelApp() {
 		history,
 		closeTabsEnabled,
 		clearSelection,
+		checkAndPromptPdfUpload,
 	]);
 
 	const handleExtractHighlighted = useCallback(async () => {
@@ -1003,6 +1083,7 @@ export function SidePanelApp() {
 			);
 
 			setHighlightedExtractionErrors(errors);
+			checkAndPromptPdfUpload(errors);
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
@@ -1072,6 +1153,7 @@ export function SidePanelApp() {
 		history,
 		closeTabsEnabled,
 		clearSelection,
+		checkAndPromptPdfUpload,
 	]);
 
 	// Export & History handlers
@@ -1148,6 +1230,47 @@ export function SidePanelApp() {
 		}
 	}, [pendingClipboardContent]);
 
+	const handlePdfFileSelected = useCallback(
+		async (file: File) => {
+			if (!pdfUploadRequest) return;
+			const { tabId, tabTitle, tabUrl } = pdfUploadRequest;
+			setPdfUploadRequest(null);
+
+			try {
+				const { text, pageCount, isScanned } = await extractTextFromFile(file);
+				if (!text.trim()) {
+					toast.error("No text found in uploaded PDF.");
+					return;
+				}
+
+				const result: ExtractedData = {
+					id: tabId,
+					timestamp: new Date().toISOString(),
+					title: tabTitle,
+					url: tabUrl,
+					text: isScanned
+						? `[Warning: This PDF appears to be scanned or image-based. Text may be incomplete.]\n\n${text}`
+						: text,
+					contentType: "pdf",
+					extractionMethod: "pdf-text",
+					charCount: text.length,
+					pageCount,
+				};
+
+				const clipboardOutcome = await copyExtractedResultsToClipboard([result]);
+				await history.addEntry([result], "json", "clipboard");
+
+				if (clipboardOutcome === "copied") {
+					toast.success("PDF extracted and copied to clipboard");
+				}
+			} catch (err) {
+				console.error("PDF file extraction failed:", err);
+				toast.error(err instanceof Error ? err.message : "Failed to extract PDF");
+			}
+		},
+		[pdfUploadRequest, copyExtractedResultsToClipboard, history],
+	);
+
 	// Effect to handle keyboard shortcut commands from background
 	useEffect(() => {
 		const handleMessage = (message: { type: string; command: string }) => {
@@ -1203,6 +1326,18 @@ export function SidePanelApp() {
 						setExtractionStatus("idle");
 					}}
 				/>
+			)}
+
+			{/* PDF upload prompt - shown when a local/auth-protected PDF needs manual upload */}
+			{pdfUploadRequest && (
+				<div className="px-4 pt-2">
+					<PdfUpload
+						tabTitle={pdfUploadRequest.tabTitle}
+						tabUrl={pdfUploadRequest.tabUrl}
+						onFileSelected={handlePdfFileSelected}
+						onDismiss={() => setPdfUploadRequest(null)}
+					/>
+				</div>
 			)}
 
 			{/* Manual Copy Button - shown when clipboard is unavailable */}
