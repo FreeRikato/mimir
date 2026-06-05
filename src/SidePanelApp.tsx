@@ -3,10 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { DomainGroup } from "./components/DomainGroup";
 import { ExtractionErrorAlert } from "./components/ExtractionErrorAlert";
-import { PdfUpload } from "./components/PdfUpload";
 import { ExtractionProgressDisplay } from "./components/ExtractionProgress";
 import { Footer } from "./components/Footer";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { PdfUpload } from "./components/PdfUpload";
 import { SettingsModal } from "./components/SettingsModal";
 import { useCloseTabsSetting } from "./hooks/useCloseTabsSetting";
 import { useHighlightedTabs } from "./hooks/useHighlightedTabs";
@@ -30,7 +30,13 @@ import { extractPdfContent } from "./utils/pdfExtraction";
 import { extractTextFromBuffer, extractTextFromFile } from "./utils/pdfExtractor";
 import { fetchRedditPost, isRedditPostUrl } from "./utils/reddit";
 import { getPageHTML } from "./utils/scripting";
-import { getSubtitleFormatSetting, type SubtitleFormat, setSubtitleFormatSetting } from "./utils/settings";
+import {
+	getSubtitleFormatSetting,
+	getSubtitleLanguageSetting,
+	type SubtitleFormat,
+	setSubtitleFormatSetting,
+	setSubtitleLanguageSetting,
+} from "./utils/settings";
 import { fetchYoutubeSubtitles } from "./utils/subtitles";
 import { closeTabsSafely, getTabsToRight } from "./utils/tabHelpers";
 import { formatXThread, isXTweetUrl, parseXTweetId, readXDataFromPage } from "./utils/xTwitter";
@@ -98,6 +104,7 @@ async function extractTab(
 	id: number,
 	signal?: AbortSignal,
 	subtitleFormat?: SubtitleExtractionFormat,
+	subtitleLanguage?: string,
 ): Promise<{ result: ExtractedData | null; error: ExtractionErrorInfo | null }> {
 	// Check for cancellation at start
 	if (signal?.aborted) {
@@ -124,6 +131,7 @@ async function extractTab(
 			try {
 				const { title, text } = await fetchYoutubeSubtitles(tabUrl, {
 					format: subtitleFormat,
+					lang: subtitleLanguage,
 					onRetry: (attempt, err) => {
 						console.warn(`Retry ${attempt} for ${tabUrl}:`, err.message);
 					},
@@ -242,11 +250,9 @@ async function extractTab(
 			if (signal?.aborted) return { result: null, error: null };
 
 			try {
-				const bgResponse = await new Promise<{ success: boolean; buffer?: ArrayBuffer; error?: string }>(
-					(resolve) => {
-						chrome.runtime.sendMessage({ type: "FETCH_PDF_BYTES", url: sourceUrl }, resolve);
-					},
-				);
+				const bgResponse = await new Promise<{ success: boolean; buffer?: ArrayBuffer; error?: string }>((resolve) => {
+					chrome.runtime.sendMessage({ type: "FETCH_PDF_BYTES", url: sourceUrl }, resolve);
+				});
 
 				if (signal?.aborted) return { result: null, error: null };
 
@@ -412,24 +418,65 @@ function createExtractionError(id: number, tab: chrome.tabs.Tab | null, err: unk
 }
 
 // Helper to extract tabs concurrently with progress tracking
-function extractTabsConcurrent(
+async function extractTabsConcurrent(
 	tabIds: number[],
 	signal: AbortSignal | undefined,
 	subtitleFormat: SubtitleExtractionFormat | undefined,
+	subtitleLanguage: string | undefined,
 	onProgress?: (update: {
 		completed: number;
 		failed: number;
 		total: number;
 		currentTab: { id: number; title: string } | null;
 	}) => void,
-): Promise<{ results: ExtractedData[]; errors: ExtractionErrorInfo[]; cancelled: boolean }> {
+): Promise<{
+	results: ExtractedData[];
+	errors: ExtractionErrorInfo[];
+	cancelled: boolean;
+	allExtractedTabIds: number[];
+}> {
 	const CONCURRENCY_LIMIT = 3;
 	const NON_YOUTUBE_TAB_TIMEOUT = 15000; // 15 seconds for non-YouTube content
 	const PDF_TAB_TIMEOUT = 60000; // 60 seconds for PDF extraction pipeline
 	const REDDIT_TAB_TIMEOUT = 45000; // 45 seconds for Reddit API + morechildren calls
 	const X_TAB_TIMEOUT = 15000; // 15 seconds — just an executeScript read, should be instant
 
+	// Dedupe tabs by URL: extract each unique URL once. The original tab IDs
+	// that shared a URL are tracked so callers can still close every duplicate.
+	const idToUrl = new Map<number, string>();
+	await Promise.all(
+		tabIds.map(async (id) => {
+			try {
+				const tab = await chrome.tabs.get(id);
+				idToUrl.set(id, tab.url || "");
+			} catch {
+				// Tab likely closed between selection and extraction; skip it.
+			}
+		}),
+	);
+
+	const urlToIds = new Map<string, number[]>();
+	for (const id of tabIds) {
+		if (!idToUrl.has(id)) continue;
+		const url = idToUrl.get(id) ?? "";
+		// Tabs with no URL (or empty string) are treated as unique per tab to
+		// avoid accidentally merging two unrelated tabs.
+		const key = url || `__no_url_${id}`;
+		const existing = urlToIds.get(key) ?? [];
+		existing.push(id);
+		urlToIds.set(key, existing);
+	}
+
+	const dedupedTabIds: number[] = [];
+	const representativeToDuplicates = new Map<number, number[]>();
+	for (const ids of urlToIds.values()) {
+		const representative = ids[0];
+		dedupedTabIds.push(representative);
+		representativeToDuplicates.set(representative, ids);
+	}
+
 	return new Promise((resolve) => {
+		const allExtractedTabIds: number[] = [];
 		const results: ExtractedData[] = [];
 		const errors: ExtractionErrorInfo[] = [];
 		let completed = 0;
@@ -437,14 +484,14 @@ function extractTabsConcurrent(
 		let cancelled = false;
 
 		// Use a queue with atomic access pattern - each worker gets exactly one item at a time
-		const queue = [...tabIds];
+		const queue = [...dedupedTabIds];
 		const active = new Set<number>();
 		let activeWorkers = 0;
 
 		const checkDone = () => {
 			// Only resolve when no workers are active and queue is empty or signal is aborted
 			if (activeWorkers === 0 && (queue.length === 0 || signal?.aborted)) {
-				resolve({ results, errors, cancelled });
+				resolve({ results, errors, cancelled, allExtractedTabIds });
 			}
 		};
 
@@ -492,7 +539,7 @@ function extractTabsConcurrent(
 			onProgress?.({
 				completed,
 				failed,
-				total: tabIds.length,
+				total: dedupedTabIds.length,
 				currentTab: { id: tabId, title: currentTabTitle },
 			});
 
@@ -511,7 +558,7 @@ function extractTabsConcurrent(
 					combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 				}
 
-				const { result, error } = await extractTab(tabId, combinedSignal, subtitleFormat);
+				const { result, error } = await extractTab(tabId, combinedSignal, subtitleFormat, subtitleLanguage);
 
 				// Check if extraction timed out or was cancelled
 				if (!result && !error) {
@@ -538,12 +585,14 @@ function extractTabsConcurrent(
 				} else if (result) {
 					results.push(result);
 					completed++;
+					const duplicates = representativeToDuplicates.get(tabId) ?? [tabId];
+					for (const id of duplicates) allExtractedTabIds.push(id);
 				}
 
 				onProgress?.({
 					completed,
 					failed,
-					total: tabIds.length,
+					total: dedupedTabIds.length,
 					currentTab: null,
 				});
 			} catch (err) {
@@ -586,7 +635,7 @@ function extractTabsConcurrent(
 		};
 
 		// Start initial workers - each worker processes items sequentially
-		const initialWorkers = Math.min(CONCURRENCY_LIMIT, tabIds.length);
+		const initialWorkers = Math.min(CONCURRENCY_LIMIT, dedupedTabIds.length);
 		activeWorkers = initialWorkers;
 
 		for (let i = 0; i < initialWorkers; i++) {
@@ -637,6 +686,7 @@ export function SidePanelApp() {
 	// Settings modal state
 	const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
 	const [subtitleFormat, setSubtitleFormat] = useState<SubtitleFormat>("json");
+	const [subtitleLanguage, setSubtitleLanguage] = useState<string>("en");
 
 	// Progress tracking state
 	const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
@@ -744,6 +794,23 @@ export function SidePanelApp() {
 		saveSubtitleFormat();
 	}, [subtitleFormat]);
 
+	// Effect to load subtitle language from storage
+	useEffect(() => {
+		const loadSubtitleLanguage = async () => {
+			const lang = await getSubtitleLanguageSetting();
+			setSubtitleLanguage(lang);
+		};
+		loadSubtitleLanguage();
+	}, []);
+
+	// Effect to save subtitle language to storage when it changes
+	useEffect(() => {
+		const saveSubtitleLanguage = async () => {
+			await setSubtitleLanguageSetting(subtitleLanguage);
+		};
+		saveSubtitleLanguage();
+	}, [subtitleLanguage]);
+
 	const resetClipboardFallbackState = useCallback(() => {
 		clearPendingClipboard();
 		setPendingClipboardContent(null);
@@ -810,10 +877,11 @@ export function SidePanelApp() {
 		});
 
 		try {
-			const { results, errors, cancelled } = await extractTabsConcurrent(
+			const { results, errors, cancelled, allExtractedTabIds } = await extractTabsConcurrent(
 				selectedIds,
 				controller.signal,
 				subtitleFormat,
+				subtitleLanguage,
 				(update) => {
 					setExtractionProgress((prev) =>
 						prev
@@ -844,7 +912,7 @@ export function SidePanelApp() {
 
 					// Close tabs if setting is enabled
 					if (closeTabsEnabled) {
-						const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
+						const { closed } = await closeTabsSafely(allExtractedTabIds);
 						if (closed > 0) {
 							clearSelection();
 						}
@@ -945,10 +1013,11 @@ export function SidePanelApp() {
 		});
 
 		try {
-			const { results, errors, cancelled } = await extractTabsConcurrent(
+			const { results, errors, cancelled, allExtractedTabIds } = await extractTabsConcurrent(
 				tabIds,
 				controller.signal,
 				subtitleFormat,
+				subtitleLanguage,
 				(update) => {
 					setToRightExtractionProgress((prev) =>
 						prev
@@ -979,7 +1048,7 @@ export function SidePanelApp() {
 
 					// Close tabs if setting is enabled
 					if (closeTabsEnabled) {
-						const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
+						const { closed } = await closeTabsSafely(allExtractedTabIds);
 						if (closed > 0) {
 							clearSelection();
 						}
@@ -1063,10 +1132,11 @@ export function SidePanelApp() {
 		});
 
 		try {
-			const { results, errors, cancelled } = await extractTabsConcurrent(
+			const { results, errors, cancelled, allExtractedTabIds } = await extractTabsConcurrent(
 				tabIds,
 				controller.signal,
 				subtitleFormat,
+				subtitleLanguage,
 				(update) => {
 					setHighlightedExtractionProgress((prev) =>
 						prev
@@ -1097,7 +1167,7 @@ export function SidePanelApp() {
 
 					// Close tabs if setting is enabled
 					if (closeTabsEnabled) {
-						const { closed } = await closeTabsSafely(validResults.map((r) => r.id));
+						const { closed } = await closeTabsSafely(allExtractedTabIds);
 						if (closed > 0) {
 							clearSelection();
 						}
@@ -1438,6 +1508,8 @@ export function SidePanelApp() {
 				onClose={handleCloseSettings}
 				subtitleFormat={subtitleFormat}
 				onFormatChange={setSubtitleFormat}
+				subtitleLanguage={subtitleLanguage}
+				onLanguageChange={setSubtitleLanguage}
 				closeTabsEnabled={closeTabsEnabled}
 				onToggleCloseTabs={toggleCloseTabs}
 				onOpenHistory={handleOpenHistory}

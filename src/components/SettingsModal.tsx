@@ -2,6 +2,7 @@ import { ChevronRight, Clock, X } from "lucide-react";
 import { useEffect } from "react";
 import type { SubtitleFormat } from "../utils/settings";
 import { SubtitleFormatSelector } from "./SubtitleFormatSelector";
+import { SubtitleLanguageSelector } from "./SubtitleLanguageSelector";
 
 interface ToggleProps {
 	enabled: boolean;
@@ -38,6 +39,8 @@ interface SettingsModalProps {
 	onClose: () => void;
 	subtitleFormat: SubtitleFormat;
 	onFormatChange: (format: SubtitleFormat) => void;
+	subtitleLanguage: string;
+	onLanguageChange: (lang: string) => void;
 	closeTabsEnabled: boolean;
 	onToggleCloseTabs: () => void;
 	onOpenHistory: () => void;
@@ -48,6 +51,8 @@ export function SettingsModal({
 	onClose,
 	subtitleFormat,
 	onFormatChange,
+	subtitleLanguage,
+	onLanguageChange,
 	closeTabsEnabled,
 	onToggleCloseTabs,
 	onOpenHistory,
@@ -92,6 +97,9 @@ export function SettingsModal({
 				<div className="flex-1 overflow-y-auto p-4 space-y-6">
 					{/* Subtitle Format Section */}
 					<SubtitleFormatSelector format={subtitleFormat} onChange={onFormatChange} />
+
+					{/* Subtitle Language Section */}
+					<SubtitleLanguageSelector language={subtitleLanguage} onChange={onLanguageChange} />
 
 					{/* Divider */}
 					<div className="border-t border-white/10" />

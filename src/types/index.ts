@@ -47,6 +47,7 @@ export type SubtitleExtractionFormat = "json" | "vtt" | "text";
 // Subtitle fetch options
 export interface SubtitleFetchOptions {
 	format?: SubtitleExtractionFormat;
+	lang?: string;
 	timeoutMs?: number;
 	maxRetries?: number;
 	onRetry?: (attempt: number, error: SubtitleError) => void;

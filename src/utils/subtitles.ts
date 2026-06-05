@@ -309,9 +309,10 @@ async function extractVideoId(youtubeUrl: string): Promise<string> {
 async function getCachedSubtitle(
 	videoId: string,
 	format: SubtitleExtractionFormat,
+	lang: string = "en",
 ): Promise<{ title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number } | null> {
 	try {
-		const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}_${format}`;
+		const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}_${lang}_${format}`;
 		const cached = await chrome.storage.local.get([cacheKey]);
 		const entry = cached[cacheKey] as SubtitleCacheEntry | undefined;
 
@@ -342,9 +343,10 @@ async function setCachedSubtitle(
 	videoId: string,
 	format: SubtitleExtractionFormat,
 	data: { title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number },
+	lang: string = "en",
 ): Promise<void> {
 	try {
-		const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}_${format}`;
+		const cacheKey = `${SUBTITLE_CACHE_PREFIX}${videoId}_${lang}_${format}`;
 		const timestamp = Date.now();
 		const entry: SubtitleCacheEntry = {
 			title: data.title,
@@ -405,7 +407,11 @@ async function setCachedSubtitle(
 	}
 }
 
-export function getSubtitlesApiUrl(youtubeUrl: string, format: SubtitleExtractionFormat = "json"): string {
+export function getSubtitlesApiUrl(
+	youtubeUrl: string,
+	format: SubtitleExtractionFormat = "json",
+	lang?: string,
+): string {
 	let baseUrl = SUBTITLES_BASE_URL || (import.meta.env.DEV ? "127.0.0.1:8000" : "");
 	if (!baseUrl) {
 		throw new Error("SUBTITLES_BASE_URL environment variable not set");
@@ -416,8 +422,13 @@ export function getSubtitlesApiUrl(youtubeUrl: string, format: SubtitleExtractio
 	}
 	// Normalize localhost to 127.0.0.1 (more reliable)
 	baseUrl = baseUrl.replace("localhost", "127.0.0.1");
-	// Use format parameter to get subtitle data in requested format
-	const url = `${baseUrl}/api/v1/subtitles?video_url=${encodeURIComponent(youtubeUrl)}&format=${format}`;
+	// Use format parameter to get subtitle data in requested format.
+	// Only append `lang` when explicitly set so the backend keeps its default for legacy callers.
+	const params = new URLSearchParams({ video_url: youtubeUrl, format });
+	if (lang && /^[A-Za-z]{2,3}(-[A-Za-z]{2,4})?$/.test(lang)) {
+		params.set("lang", lang);
+	}
+	const url = `${baseUrl}/api/v1/subtitles?${params.toString()}`;
 	console.log("Subtitles API URL:", url);
 	return url;
 }
@@ -688,7 +699,15 @@ export async function fetchYoutubeSubtitles(
 	youtubeUrl: string,
 	options: SubtitleFetchOptions = {},
 ): Promise<{ title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number }> {
-	const { format = "json", timeoutMs = REQUEST_TIMEOUT_MS, maxRetries = RETRY_MAX_ATTEMPTS, onRetry, signal } = options;
+	const {
+		format = "json",
+		lang,
+		timeoutMs = REQUEST_TIMEOUT_MS,
+		maxRetries = RETRY_MAX_ATTEMPTS,
+		onRetry,
+		signal,
+	} = options;
+	const effectiveLang = lang && /^[A-Za-z]{2,3}(-[A-Za-z]{2,4})?$/.test(lang) ? lang : "en";
 
 	if (!isYouTubeUrl(youtubeUrl)) {
 		throw new SubtitleError("Invalid YouTube URL", "INVALID_URL", undefined, youtubeUrl);
@@ -718,7 +737,7 @@ export async function fetchYoutubeSubtitles(
 		hasShownBackendUnavailableToast = false;
 	}
 
-	const cached = await getCachedSubtitle(videoId, format);
+	const cached = await getCachedSubtitle(videoId, format, effectiveLang);
 	if (cached) {
 		return cached;
 	}
@@ -726,7 +745,7 @@ export async function fetchYoutubeSubtitles(
 	return fetchWithRetry(
 		async () => {
 			const normalizedUrl = normalizeYouTubeUrl(youtubeUrl);
-			const apiUrl = getSubtitlesApiUrl(normalizedUrl, format);
+			const apiUrl = getSubtitlesApiUrl(normalizedUrl, format, effectiveLang);
 			const response = await fetchWithTimeout(apiUrl, format, timeoutMs, signal);
 
 			if (!response.ok) {
@@ -855,7 +874,7 @@ export async function fetchYoutubeSubtitles(
 				};
 			}
 
-			await setCachedSubtitle(videoId, format, result);
+			await setCachedSubtitle(videoId, format, result, effectiveLang);
 
 			return result;
 		},
