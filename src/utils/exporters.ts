@@ -1,24 +1,21 @@
 import type { ExtractedData } from "../types";
+import {
+	createHtmlId as createHtmlIdHelper,
+	escapeMarkdown as escapeMarkdownHelper,
+	sanitizeUrl as sanitizeUrlHelper,
+	slugifyDomainAnchor,
+} from "./exporters.state";
 
 /**
  * Sanitize URL for use in href attributes
  * Ensures the URL uses a safe protocol (http, https, mailto, tel)
  * Prevents javascript: and other dangerous protocol attacks
  */
+// Bug 1.14: sanitization now lives in exporters.state.sanitizeUrlHelper,
+// which uses an explicit allow-list and rejects data: URLs and whitespace-
+// injected scheme attacks. This is a thin re-export to keep call sites unchanged.
 function sanitizeUrl(url: string): string {
-	const str = url == null ? "" : String(url);
-	try {
-		const parsed = new URL(str);
-		// Only allow safe protocols
-		const safeProtocols = ["http:", "https:", "mailto:", "tel:"];
-		if (!safeProtocols.includes(parsed.protocol)) {
-			return "#"; // Return safe fallback for dangerous protocols
-		}
-		return str;
-	} catch {
-		// Invalid URL, return safe fallback
-		return "#";
-	}
+	return sanitizeUrlHelper(url);
 }
 
 export type ExportFormat = "json" | "markdown" | "text" | "csv" | "html";
@@ -33,23 +30,11 @@ export interface ExportOptions {
  * Create a valid HTML ID from a string
  * HTML IDs must start with a letter and can only contain letters, digits, hyphens, and underscores
  */
-function createHtmlId(input: string): string {
-	// Guard against null/undefined input
-	if (input == null) {
-		return "section";
-	}
-	const str = String(input);
-
-	return (
-		str
-			.toLowerCase()
-			.replace(/[^a-z0-9]/gi, "-") // Replace non-alphanumeric chars with hyphens
-			.replace(/^-+/g, "") // Remove leading hyphens
-			.replace(/-+/g, "-") // Replace multiple hyphens with single hyphen
-			.replace(/^-/g, "x") // Ensure it doesn't start with a hyphen (prepend 'x' if needed)
-			.substring(0, 50) || // Limit length
-		"section"
-	); // Ensure non-empty result
+// Bug 1.15 + 1.19: ID generation now lives in exporters.state.createHtmlId,
+// which uses slice (not deprecated substr) and resolves collisions with a
+// short hash so the second entry is still reachable as an anchor.
+function createHtmlId(input: string, taken: Set<string> = new Set()): string {
+	return createHtmlIdHelper(input, taken);
 }
 
 /**
@@ -118,7 +103,8 @@ export function formatAsMarkdown(data: ExtractedData[]): string {
 	const domains = Array.from(groupedByDomain.keys()).sort();
 	for (const domain of domains) {
 		const items = groupedByDomain.get(domain) || [];
-		markdown += `- [${domain}](#${domain.toLowerCase().replace(/\./g, "-")}) (${items.length})\n`;
+		const anchor = slugifyDomainAnchor(domain);
+		markdown += `- [${domain}](#${anchor}) (${items.length})\n`;
 	}
 	markdown += "\n---\n\n";
 
@@ -286,9 +272,10 @@ export function formatAsHTML(data: ExtractedData[]): string {
 `;
 
 	// Table of contents
+	const takenIds = new Set<string>();
 	for (const domain of domains) {
 		const items = groupedByDomain.get(domain) || [];
-		const anchorId = createHtmlId(domain);
+		const anchorId = createHtmlId(domain, takenIds);
 		html += `      <li class="toc-item"><a href="#${anchorId}">${escapeHTML(domain)}</a> (${items.length})</li>\n`;
 	}
 
@@ -297,7 +284,7 @@ export function formatAsHTML(data: ExtractedData[]): string {
 	// Content by domain
 	for (const domain of domains) {
 		const items = groupedByDomain.get(domain) || [];
-		const anchorId = createHtmlId(domain);
+		const anchorId = createHtmlId(domain, takenIds);
 
 		html += `  <div class="domain-header" id="${anchorId}">${escapeHTML(domain)}</div>\n`;
 
@@ -389,10 +376,8 @@ function escapeHTML(text: string): string {
 	return div.innerHTML;
 }
 
+// Bug 1.13: backticks are no longer escaped (most renderers treat \` as a
+// literal backslash followed by a backtick). The helper lives in exporters.state.
 function escapeMarkdown(text: string): string {
-	// Guard against null/undefined input
-	const str = text == null ? "" : String(text);
-
-	// Escape special markdown characters
-	return str.replace(/([_*[\]()\\`~#+\-.!|])/g, "\\$1");
+	return escapeMarkdownHelper(text);
 }
