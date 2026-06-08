@@ -130,17 +130,23 @@ export async function closeTabsSafely(tabIds: number[]): Promise<CloseTabsResult
 		// Attempt to close the tabs
 		await chrome.tabs.remove(tabsToClose);
 
-		// Verify active tab wasn't accidentally closed (race condition detection)
-		const [activeTabAfter] = await chrome.tabs.query({
-			active: true,
-			currentWindow: true,
-		});
-
-		// If the active tab changed unexpectedly, it might have been closed accidentally
-		const activeTabWasClosed = activeTabBeforeClose && activeTabAfter?.id !== activeTabBeforeClose;
+		// Detect whether the previously-active tab was actually closed (race
+		// condition safety net). Re-query the specific tab id we observed
+		// before the close, not the current active tab: the user may have
+		// legitimately switched the active tab while the close was in flight,
+		// in which case the original tab is still alive and we should NOT
+		// subtract from `closed`.
+		let previouslyActiveTabStillExists = true;
+		if (activeTabBeforeClose !== undefined) {
+			try {
+				await chrome.tabs.get(activeTabBeforeClose);
+			} catch {
+				previouslyActiveTabStillExists = false;
+			}
+		}
 
 		return {
-			closed: activeTabWasClosed ? tabsToClose.length - 1 : tabsToClose.length,
+			closed: previouslyActiveTabStillExists ? tabsToClose.length : tabsToClose.length - 1,
 			failed: 0,
 			activeProtected: activeTabId !== undefined && tabIds.includes(activeTabId),
 		};
