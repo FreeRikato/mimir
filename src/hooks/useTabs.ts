@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChromeTab, DomainGroup } from "../types";
-import { CACHE_TTL, getCachedTabs, removeExpiredContentCache, setCachedTabs } from "../utils/cache";
+import { getCachedTabs, removeExpiredContentCache, setCachedTabs } from "../utils/cache";
 import { clearGroupTabsCache, groupTabs } from "../utils/domainHelpers";
 import { shouldFilterTabUrl } from "../utils/pdf";
+import { isCachedTabsPayloadValid } from "../utils/sessionCacheValidation";
 
 const DEBOUNCE_DELAY = 500; // 500ms debounce for tab events
 
@@ -125,9 +126,13 @@ export function useTabs() {
 
 		const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
 			if (areaName === "session" && changes[CACHE_KEY]) {
-				const newValue = changes[CACHE_KEY].newValue as { data: DomainGroup[]; timestamp: number } | undefined;
-				if (newValue && Date.now() - newValue.timestamp < CACHE_TTL) {
-					setGroups(newValue.data);
+				// Bug 1.16: validate the full payload shape, not just the
+				// timestamp. A corrupted entry with timestamp:
+				// Number.MAX_SAFE_INTEGER and an empty data array previously
+				// passed the old `Date.now() - timestamp < CACHE_TTL` check
+				// because the diff is a huge negative number.
+				if (isCachedTabsPayloadValid(changes[CACHE_KEY].newValue)) {
+					setGroups(changes[CACHE_KEY].newValue.data);
 				}
 			}
 		};
