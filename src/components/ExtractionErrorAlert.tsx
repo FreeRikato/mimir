@@ -1,12 +1,21 @@
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, X } from "lucide-react";
+import { useState } from "react";
 import type { ExtractionErrorInfo } from "../types";
+import { shouldShowBackendRetry } from "../utils/extractionErrorDisplay";
+import { computeErrorAlertRenderModel } from "./ExtractionErrorAlert.state";
 
 interface ExtractionErrorAlertProps {
 	errors: ExtractionErrorInfo[];
 	onDismiss: () => void;
+	// Bug 1.20: optional callback for a "Retry backend" button. The button
+	// is shown only when at least one error is a transient backend error
+	// (NETWORK_ERROR / SERVER_ERROR / TIMEOUT).
+	onRetryBackend?: () => void;
 }
 
-export function ExtractionErrorAlert({ errors, onDismiss }: ExtractionErrorAlertProps) {
+export function ExtractionErrorAlert({ errors, onDismiss, onRetryBackend }: ExtractionErrorAlertProps) {
+	const [expanded, setExpanded] = useState(false);
+
 	if (errors.length === 0) return null;
 
 	const isYouTubeError = (error: ExtractionErrorInfo): boolean =>
@@ -20,6 +29,8 @@ export function ExtractionErrorAlert({ errors, onDismiss }: ExtractionErrorAlert
 	const hasPdfTooLargeErrors = errors.some((e) => e.errorCode === "PDF_TOO_LARGE");
 	const hasPdfOcrErrors = errors.some((e) => e.errorCode === "OCR_UNAVAILABLE");
 
+	const model = computeErrorAlertRenderModel(errors, expanded);
+
 	return (
 		<div className="glass-heavy border border-red-500/30 rounded-lg p-3 mb-3">
 			<div className="flex items-center justify-between mb-2">
@@ -29,6 +40,15 @@ export function ExtractionErrorAlert({ errors, onDismiss }: ExtractionErrorAlert
 						{errors.length} extraction error{errors.length > 1 ? "s" : ""}
 					</span>
 				</div>
+				{onRetryBackend && shouldShowBackendRetry(errors) && (
+					<button
+						onClick={onRetryBackend}
+						className="text-xs px-2 py-1 rounded glass-hover text-glass-secondary hover:text-white"
+						title="Retry: clear backend health cache and try again"
+					>
+						Retry backend
+					</button>
+				)}
 				<button onClick={onDismiss} className="text-glass-muted hover:text-white">
 					<X className="w-4 h-4" />
 				</button>
@@ -71,7 +91,7 @@ export function ExtractionErrorAlert({ errors, onDismiss }: ExtractionErrorAlert
 			)}
 
 			<ul className="text-xs space-y-1 text-glass-muted">
-				{errors.slice(0, 3).map((err, i) => (
+				{model.visible.map((err, i) => (
 					<li key={i} className="flex gap-2">
 						<span className="opacity-50">{i + 1}.</span>
 						<span className="truncate flex-1" title={err.title}>
@@ -80,7 +100,32 @@ export function ExtractionErrorAlert({ errors, onDismiss }: ExtractionErrorAlert
 						<span className="text-red-400">- {err.userMessage}</span>
 					</li>
 				))}
-				{errors.length > 3 && <li className="text-glass-muted italic">And {errors.length - 3} more...</li>}
+				{/* Bug 1.5: previously the alert was truncated to 3 + "and N more..."
+				with no way to see the rest. The button below toggles the list. */}
+				{model.canExpand && (
+					<li>
+						<button
+							type="button"
+							onClick={() => setExpanded(true)}
+							className="flex items-center gap-1 text-glass-muted hover:text-white"
+						>
+							<ChevronRight className="w-3 h-3" />
+							<span className="italic">Show {model.hiddenCount} more</span>
+						</button>
+					</li>
+				)}
+				{expanded && model.canExpand === false && errors.length > 3 && (
+					<li>
+						<button
+							type="button"
+							onClick={() => setExpanded(false)}
+							className="flex items-center gap-1 text-glass-muted hover:text-white"
+						>
+							<ChevronDown className="w-3 h-3" />
+							<span className="italic">Show less</span>
+						</button>
+					</li>
+				)}
 			</ul>
 		</div>
 	);
