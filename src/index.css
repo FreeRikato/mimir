@@ -108,7 +108,6 @@ body {
 
 .glass-hover:hover {
 	background: var(--glass-bg-light);
-	box-shadow: var(--glass-shadow-hover);
 	transform: translateY(-1px);
 	border-color: rgba(255, 255, 255, 0.25);
 	/* Add subtle glow for better visibility */

@@ -221,11 +221,13 @@ class IndexedDB {
 
 		// Filter by date range
 		if (query.dateFrom !== undefined) {
-			entries = entries.filter((entry) => entry.timestamp >= query.dateFrom!);
+			const from = query.dateFrom;
+			entries = entries.filter((entry) => entry.timestamp >= from);
 		}
 
 		if (query.dateTo !== undefined) {
-			entries = entries.filter((entry) => entry.timestamp <= query.dateTo!);
+			const to = query.dateTo;
+			entries = entries.filter((entry) => entry.timestamp <= to);
 		}
 
 		// Filter by domains

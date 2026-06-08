@@ -42,7 +42,7 @@ export function Footer({
 	isExtracting,
 	isRefreshing,
 	extractionStatus,
-	extractionErrors: _extractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
+	extractionErrors: _extractionErrors,
 	onExtract,
 	onRefresh,
 	onCancel,
@@ -51,13 +51,13 @@ export function Footer({
 	onExtractToRight,
 	isExtractingToRight,
 	toRightExtractionStatus,
-	toRightExtractionErrors: _toRightExtractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
+	toRightExtractionErrors: _toRightExtractionErrors,
 	// Highlighted tabs props
 	highlightedCount,
 	onExtractHighlighted,
 	isExtractingHighlighted,
 	highlightedExtractionStatus,
-	highlightedExtractionErrors: _highlightedExtractionErrors, // eslint-disable-line @typescript-eslint/no-unused-vars
+	highlightedExtractionErrors: _highlightedExtractionErrors,
 	// Settings props
 	onOpenSettings,
 }: FooterProps) {

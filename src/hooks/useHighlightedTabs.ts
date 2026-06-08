@@ -15,7 +15,7 @@ export function useHighlightedTabs() {
 
 	// Initial load
 	useEffect(() => {
-		fetchHighlightedTabs(); // eslint-disable-line react-hooks/set-state-in-effect
+		fetchHighlightedTabs();
 	}, []);
 
 	// Listen for highlighted tab changes in Chrome

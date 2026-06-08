@@ -232,7 +232,7 @@ export async function fetchRedditPost(
 	}
 
 	const postChild = json[0]?.data?.children?.[0];
-	if (!postChild || postChild.kind !== "t3") {
+	if (postChild?.kind !== "t3") {
 		throw new SubtitleError("Could not find post data in Reddit API response", "PARSE_ERROR", undefined, url);
 	}
 
