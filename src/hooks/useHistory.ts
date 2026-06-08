@@ -30,6 +30,9 @@ interface UseHistoryReturn {
 	clearAll: () => Promise<boolean>;
 	search: (query: SearchQuery) => Promise<void>;
 	clearSearch: () => Promise<void>;
+	// Bug 1.18: the search-hit count, surfaced to HistoryPanel so the header
+	// shows "N of M" instead of just "M" when the user is searching.
+	searchResultCount: number | null;
 }
 
 export function useHistory(): UseHistoryReturn {
@@ -40,6 +43,9 @@ export function useHistory(): UseHistoryReturn {
 	const [hasMore, setHasMore] = useState(false);
 	const [currentLimit, setCurrentLimit] = useState(PAGE_SIZE);
 	const [isSearchActive, setIsSearchActive] = useState(false);
+	// Bug 1.18: the search-hit count, surfaced to HistoryPanel so the header
+	// shows "N of M" instead of just "M" when the user is searching.
+	const [searchResultCount, setSearchResultCount] = useState<number | null>(null);
 
 	// Use refs to avoid dependency issues
 	const isLoadingRef = useRef(isLoading);
@@ -56,6 +62,7 @@ export function useHistory(): UseHistoryReturn {
 		setError(null);
 		setIsSearchActive(false);
 		setCurrentLimit(PAGE_SIZE);
+		setSearchResultCount(null);
 
 		try {
 			const [fetchedEntries, fetchedCount] = await Promise.all([getHistoryEntries(PAGE_SIZE), getHistoryCount()]);
@@ -158,11 +165,16 @@ export function useHistory(): UseHistoryReturn {
 		setIsLoading(true);
 		setError(null);
 		setIsSearchActive(true);
+		// Bug 1.4: reset currentLimit to PAGE_SIZE on every new search so a
+		// later clearSearch → refresh does not load more than PAGE_SIZE entries.
+		setCurrentLimit(PAGE_SIZE);
 
 		try {
 			const results = await searchHistoryStorage(query);
 			setEntries(results);
 			setHasMore(false); // Search results are not paginated
+			// Bug 1.18: capture the hit count so the UI can show "N of M".
+			setSearchResultCount(results.length);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Search failed");
 			console.error("Failed to search history:", err);
@@ -173,6 +185,7 @@ export function useHistory(): UseHistoryReturn {
 
 	const clearSearch = useCallback(async () => {
 		setIsSearchActive(false);
+		setSearchResultCount(null);
 		await refresh();
 	}, [refresh]);
 
@@ -201,6 +214,7 @@ export function useHistory(): UseHistoryReturn {
 			setError(null);
 			setIsSearchActive(false);
 			setCurrentLimit(PAGE_SIZE);
+			setSearchResultCount(null);
 
 			try {
 				const [fetchedEntries, fetchedCount] = await Promise.all([getHistoryEntries(PAGE_SIZE), getHistoryCount()]);
@@ -242,5 +256,6 @@ export function useHistory(): UseHistoryReturn {
 		clearAll,
 		search,
 		clearSearch,
+		searchResultCount,
 	};
 }

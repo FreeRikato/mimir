@@ -11,6 +11,10 @@ interface HistoryPanelProps {
 	onClose: () => void;
 	entries: HistoryEntry[];
 	count: number;
+	// Bug 1.18: when the user is searching, this is the search-hit count.
+	// The header shows "searchResultCount of count" so the user knows how
+	// many entries matched.
+	searchResultCount?: number | null;
 	isLoading: boolean;
 	error: string | null;
 	hasMore: boolean;
@@ -36,6 +40,7 @@ export function HistoryPanel({
 	onClose,
 	entries,
 	count,
+	searchResultCount,
 	isLoading,
 	error,
 	hasMore,
@@ -112,7 +117,7 @@ export function HistoryPanel({
 						<Clock className="w-5 h-5 text-white" />
 						<h2 className="text-lg font-semibold text-glass-primary">Extraction History</h2>
 						<span className="px-2 py-0.5 rounded-full glass-heavy text-xs text-glass-muted border border-white/10">
-							{count}
+							{searchResultCount != null ? `${searchResultCount} of ${count}` : count}
 						</span>
 					</div>
 					<div className="flex items-center gap-2">
