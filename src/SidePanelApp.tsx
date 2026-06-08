@@ -25,7 +25,9 @@ import type {
 import { SubtitleError } from "./types";
 import { getCachedContent, setCachedContent } from "./utils/cache";
 import { createClipboardFallback } from "./utils/clipboardFallback";
+import { createDebouncer } from "./utils/debounce";
 import { downloadAsFile, formatExport, getMimeType } from "./utils/exporters";
+import { createExtractionError } from "./utils/extractionError";
 import { detectPdfCandidate } from "./utils/pdf";
 import { extractPdfContent } from "./utils/pdfExtraction";
 import { extractTextFromBuffer, extractTextFromFile } from "./utils/pdfExtractor";
@@ -39,7 +41,8 @@ import {
 	setSubtitleFormatSetting,
 	setSubtitleLanguageSetting,
 } from "./utils/settings";
-import { fetchYoutubeSubtitles } from "./utils/subtitles";
+import { createSingleFlight } from "./utils/singleFlight";
+import { clearHealthCheckCache, fetchYoutubeSubtitles } from "./utils/subtitles";
 import { closeTabsSafely, getTabsToRight } from "./utils/tabHelpers";
 import { formatXThread, isXTweetUrl, parseXTweetId, readXDataFromPage } from "./utils/xTwitter";
 import { isYouTubeUrl } from "./utils/youtube";
@@ -142,6 +145,15 @@ async function extractTab(
 					},
 					signal,
 				});
+				// Bug 1.7: previously a YouTube "no result" (empty text) was silent.
+				// The user saw nothing extracted and no error toast. Now we surface
+				// a NO_SUBTITLES error so the user gets a toast.
+				if (!text?.trim()) {
+					return {
+						result: null,
+						error: createExtractionError({ tabId: id, tab, err: null, cause: "youtube-empty" }),
+					};
+				}
 				return {
 					result: {
 						id,
@@ -157,7 +169,7 @@ async function extractTab(
 				if (signal?.aborted) {
 					return { result: null, error: null };
 				}
-				const errorInfo = createExtractionError(id, tab, err);
+				const errorInfo = createExtractionError({ tabId: id, tab, err });
 				console.error(`Failed to extract YouTube subtitles for tab ${id}:`, err);
 				return { result: null, error: errorInfo };
 			}
@@ -182,7 +194,7 @@ async function extractTab(
 				if (signal?.aborted) {
 					return { result: null, error: null };
 				}
-				const errorInfo = createExtractionError(id, tab, err);
+				const errorInfo = createExtractionError({ tabId: id, tab, err });
 				console.error(`Failed to extract Reddit post for tab ${id}:`, err);
 				return { result: null, error: errorInfo };
 			}
@@ -202,15 +214,26 @@ async function extractTab(
 
 				const rawData = injection[0]?.result ?? null;
 				if (!rawData) {
-					throw new SubtitleError(
-						"Tweet data not captured yet. Make sure the page is fully loaded, then try again. If the problem persists, refresh the tab.",
-						"PARSE_ERROR",
-						undefined,
-						tabUrl,
-					);
+					// Bug 1.24: this is the "not yet captured" path — the X content
+					// script hasn't run on the page yet. Surface a clear retry hint
+					// instead of a generic PARSE_ERROR toast.
+					return {
+						result: null,
+						error: createExtractionError({ tabId: id, tab, err: null, cause: "x-not-captured" }),
+					};
 				}
 
-				const { title, text } = formatXThread(rawData, tweetId);
+				const { title, text, mainFound } = formatXThread(rawData, tweetId);
+				// Bug 1.24: distinguish "not yet captured" (rawData was null) from
+				// "schema drift" (rawData present but the focal tweet entry is missing
+				// from the GraphQL response). The former is a retry hint, the latter
+				// a bug-report hint.
+				if (!mainFound) {
+					return {
+						result: null,
+						error: createExtractionError({ tabId: id, tab, err: null, cause: "x-schema-drift" }),
+					};
+				}
 				return {
 					result: {
 						id,
@@ -227,7 +250,7 @@ async function extractTab(
 				if (signal?.aborted) {
 					return { result: null, error: null };
 				}
-				const errorInfo = createExtractionError(id, tab, err);
+				const errorInfo = createExtractionError({ tabId: id, tab, err });
 				console.error(`Failed to extract X/Twitter tweet for tab ${id}:`, err);
 				return { result: null, error: errorInfo };
 			}
@@ -322,13 +345,13 @@ async function extractTab(
 				};
 			} catch (err) {
 				if (signal?.aborted) return { result: null, error: null };
-				const errorInfo = createExtractionError(id, tab, err);
+				const errorInfo = createExtractionError({ tabId: id, tab, err });
 				console.error(`Failed to extract PDF for tab ${id}:`, err);
 				return { result: null, error: errorInfo };
 			}
 		}
 
-		const cachedContent = await getCachedContent(id);
+		const cachedContent = await getCachedContent(id, tabUrl);
 		if (cachedContent) {
 			return {
 				result: {
@@ -347,16 +370,38 @@ async function extractTab(
 			return { result: null, error: null };
 		}
 
-		const injection = await chrome.scripting.executeScript({
-			target: { tabId: id },
-			func: getPageHTML,
-		});
+		let injection: chrome.scripting.InjectionResult[] = [];
+		try {
+			injection = await chrome.scripting.executeScript({
+				target: { tabId: id },
+				func: getPageHTML,
+			});
+		} catch (scriptingErr) {
+			if (signal?.aborted) return { result: null, error: null };
+			// Bug 1.6: surface a real error to the user instead of silently
+			// returning null. The cause discriminator lets the helper pick a
+			// specific user message ("tab suspended", "permission denied",
+			// "frame not loaded", ...).
+			const errorInfo = createExtractionError({ tabId: id, tab, err: scriptingErr, cause: "scripting" });
+			console.warn(`Tab ${id}: chrome.scripting.executeScript failed:`, scriptingErr);
+			return { result: null, error: errorInfo };
+		}
+
+		if (signal?.aborted) return { result: null, error: null };
 
 		const result = injection[0]?.result as ExtractionResult | undefined;
 
 		if (!result) {
+			// Bug 1.6: previously this branch was silent. Surface a specific
+			// user-facing error so the user knows the tab wasn't readable.
+			const errorInfo = createExtractionError({
+				tabId: id,
+				tab,
+				err: new Error("executeScript returned no result"),
+				cause: "scripting",
+			});
 			console.warn(`Tab ${id}: No content extracted (tab may be suspended or not loaded)`);
-			return { result: null, error: null };
+			return { result: null, error: errorInfo };
 		}
 
 		// Skip cache write if aborted
@@ -381,45 +426,10 @@ async function extractTab(
 		if (signal?.aborted) {
 			return { result: null, error: null };
 		}
-		const errorInfo = createExtractionError(id, tab, err);
+		const errorInfo = createExtractionError({ tabId: id, tab, err });
 		console.error(`Failed to extract tab ${id}:`, err);
 		return { result: null, error: errorInfo };
 	}
-}
-
-// Helper function to create extraction error
-function createExtractionError(id: number, tab: chrome.tabs.Tab | null, err: unknown): ExtractionErrorInfo {
-	let code: SubtitleError["code"] = "NETWORK_ERROR";
-	let userMessage = "Extraction failed";
-
-	if (err instanceof SubtitleError) {
-		code = err.code;
-		userMessage = err.message;
-	} else if (err instanceof Error) {
-		// Handle Error and DOMException (DOMException extends Error in modern browsers)
-		userMessage = err.message || "Unknown error";
-		// Special handling for common error types
-		if (err.name === "DOMException") {
-			code = "NETWORK_ERROR";
-			// Add more context for DOMException
-			if (!userMessage) {
-				userMessage = "Access denied or page not accessible";
-			}
-		}
-	} else if (typeof err === "string") {
-		userMessage = err;
-	} else if (err != null) {
-		// Try to extract message from unknown error objects
-		userMessage = (err as { message?: string }).message || JSON.stringify(err);
-	}
-
-	return {
-		tabId: id,
-		url: tab?.url || "unknown",
-		title: tab?.title || "Unknown",
-		errorCode: code,
-		userMessage,
-	};
 }
 
 // Helper to extract tabs concurrently with progress tracking
@@ -768,7 +778,10 @@ export function SidePanelApp() {
 		setIsRefreshing(false);
 	}, [refresh, clearSelection]);
 
-	// Effect to track tabs to right count
+	// Effect to track tabs to right count. Bug 1.9: the four chrome.tabs.*
+	// listeners used to trigger an immediate chrome.tabs.query. Opening 20 tabs
+	// in a second = 20 queries. The listeners now coalesce into one query
+	// after a 500ms idle window (matches the debounce in useTabs).
 	useEffect(() => {
 		const updateTabsToRightCount = async () => {
 			const tabs = await getTabsToRight();
@@ -777,9 +790,11 @@ export function SidePanelApp() {
 
 		updateTabsToRightCount();
 
-		// Recalculate on tab changes
+		const debouncer = createDebouncer(500);
 		const handleTabChange = () => {
-			updateTabsToRightCount();
+			debouncer.schedule(() => {
+				void updateTabsToRightCount();
+			});
 		};
 
 		chrome.tabs.onMoved.addListener(handleTabChange);
@@ -788,6 +803,7 @@ export function SidePanelApp() {
 		chrome.tabs.onRemoved.addListener(handleTabChange);
 
 		return () => {
+			debouncer.cancel();
 			chrome.tabs.onMoved.removeListener(handleTabChange);
 			chrome.tabs.onActivated.removeListener(handleTabChange);
 			chrome.tabs.onCreated.removeListener(handleTabChange);
@@ -1377,20 +1393,36 @@ export function SidePanelApp() {
 
 	// Effect to handle keyboard shortcut commands from background
 	useEffect(() => {
+		// Bug 1.23: a double-tapped keyboard shortcut used to start two
+		// extractions in parallel. The first to set AbortController won; the
+		// second silently overwrote the controller, leaving the first
+		// extraction uncancellable. The single-flight guard drops the second
+		// trigger while an extraction is in flight.
+		const guard = createSingleFlight();
 		const handleMessage = (message: { type: string; command: string }) => {
-			if (message.type === "KEYBOARD_COMMAND") {
-				switch (message.command) {
-					case "extract-to-right":
-						handleExtractToRight();
-						break;
-					case "extract-selected":
-						handleExtract();
-						break;
-					case "extract-highlighted":
-						handleExtractHighlighted();
-						break;
-				}
+			if (message.type !== "KEYBOARD_COMMAND") return;
+			if (!guard.tryStart()) {
+				toast("Extraction already in progress", { icon: "⏳", id: "extraction-busy" });
+				return;
 			}
+			const run = async () => {
+				try {
+					switch (message.command) {
+						case "extract-to-right":
+							await handleExtractToRight();
+							break;
+						case "extract-selected":
+							await handleExtract();
+							break;
+						case "extract-highlighted":
+							await handleExtractHighlighted();
+							break;
+					}
+				} finally {
+					guard.finish();
+				}
+			};
+			void run();
 		};
 
 		chrome.runtime.onMessage.addListener(handleMessage);
@@ -1428,6 +1460,17 @@ export function SidePanelApp() {
 					onDismiss={() => {
 						setExtractionErrors([]);
 						setExtractionStatus("idle");
+					}}
+					// Bug 1.20: wire the "Retry backend" button to clear the
+					// health-check cache and re-run the failed extractions.
+					onRetryBackend={async () => {
+						await clearHealthCheckCache();
+						setExtractionErrors([]);
+						setExtractionStatus("idle");
+						// Re-run the last attempted extraction. The user can hit the
+						// "Extract tabs" button manually; the cleared cache means
+						// the next run starts fresh.
+						toast.success("Backend cache cleared. Run extraction again.");
 					}}
 				/>
 			)}
@@ -1524,6 +1567,7 @@ export function SidePanelApp() {
 				onClose={handleCloseHistory}
 				entries={history.entries}
 				count={history.count}
+				searchResultCount={history.searchResultCount}
 				isLoading={history.isLoading}
 				error={history.error}
 				hasMore={history.hasMore}
