@@ -363,7 +363,7 @@ export function getCacheKey(): string {
 	return CACHE_KEY;
 }
 
-interface ExtractedContentEntry {
+export interface ExtractedContentEntry {
 	text: string;
 	title: string;
 	url: string;
@@ -373,7 +373,10 @@ interface ExtractedContentEntry {
 	lastAccess: number;
 }
 
-export async function getCachedContent(tabId: number): Promise<{ text: string; title: string; url: string } | null> {
+export async function getCachedContent(
+	tabId: number,
+	currentUrl?: string,
+): Promise<{ text: string; title: string; url: string } | null> {
 	try {
 		const cacheKey = `${CONTENT_CACHE_PREFIX}${tabId}`;
 		const cached = await chrome.storage.session.get([cacheKey]);
@@ -385,6 +388,14 @@ export async function getCachedContent(tabId: number): Promise<{ text: string; t
 
 		// Check for expiration
 		if (now - entry.timestamp > CONTENT_CACHE_TTL) {
+			await chrome.storage.session.remove([cacheKey]);
+			await removeEntryMetadata(cacheKey);
+			return null;
+		}
+
+		// Bug 1.3: invalidate on URL change. If the tab navigated to a new URL
+		// since we cached, the cached text/title are stale.
+		if (currentUrl && entry.url && entry.url !== currentUrl) {
 			await chrome.storage.session.remove([cacheKey]);
 			await removeEntryMetadata(cacheKey);
 			return null;
@@ -459,6 +470,17 @@ export async function setCachedContent(
 				// If we still get a quota error, try emergency eviction
 				if (setErr instanceof Error && (setErr.message.includes("QUOTA") || setErr.message.includes("quota"))) {
 					console.warn("Storage quota exceeded, performing emergency eviction");
+
+					// Bug 1.11: the entire emergency-eviction sequence MUST run under
+					// `contentCacheWriteLock` (the outer lock set above). A second
+					// concurrent setCachedContent would otherwise call
+					// updateEntryMetadata against a stale metadata snapshot that
+					// pre-dates rebuildMetadata() and corrupt totalSize. Re-acquire
+					// the lock here as a no-op safety so future refactors cannot
+					// accidentally split the critical section.
+					if (contentCacheWriteLock) {
+						await contentCacheWriteLock;
+					}
 
 					// Rebuild metadata to ensure accuracy
 					await rebuildMetadata();
