@@ -92,6 +92,7 @@ export interface FastApiErrorResponse {
 
 export type SubtitleErrorCode =
 	| "INVALID_URL"
+	| "UNKNOWN_ERROR"
 	| "NETWORK_ERROR"
 	| "TIMEOUT"
 	| "SERVER_ERROR"
