@@ -133,7 +133,7 @@ function extractItemContent(itemContent: ItemContent | undefined): TweetResult |
 
 // ── Main formatter ────────────────────────────────────────────────────────────
 
-export function formatXThread(rawData: unknown, tweetId: string): { title: string; text: string } {
+export function formatXThread(rawData: unknown, tweetId: string): { title: string; text: string; mainFound: boolean } {
 	const data = rawData as TweetDetailResponse;
 	const instructions = data?.data?.threaded_conversation_with_injections_v2?.instructions ?? [];
 
@@ -213,7 +213,7 @@ export function formatXThread(rawData: unknown, tweetId: string): { title: strin
 
 	const text = mainBlock + (replyBlocks.length > 0 ? replySectionHeader + replyBlocks.join(separator) : "");
 
-	return { title: mainTweetTitle, text };
+	return { title: mainTweetTitle, text, mainFound };
 }
 
 // ── executeScript bridge (serialisable, runs in MAIN world) ──────────────────
