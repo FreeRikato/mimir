@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import { SubtitleError } from "../types";
 import { checkBackendHealth, clearHealthCheckCache as clearHealthCache } from "./backendHealth";
+import { loadBackendUnavailableToastFlag, setBackendUnavailableToastFlag } from "./backendToastFlag";
 import { normalizeBackendBaseUrl } from "./backendUrl";
 import { isYouTubeUrl, normalizeYouTubeUrl } from "./youtube";
 
@@ -17,9 +18,6 @@ const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 500;
 const RETRY_MAX_DELAY_MS = 5000;
 const REQUEST_TIMEOUT_MS = 100000;
-
-// Track if we've already shown the backend unavailable toast
-let hasShownBackendUnavailableToast = false;
 
 const SUBTITLE_CACHE_PREFIX = "subtitle_";
 const SUBTITLE_CACHE_TTL = 3600000; // 1 hour
@@ -452,14 +450,7 @@ async function fetchFromBackground(
 
 		const timeoutId = setTimeout(() => {
 			console.error("SidePanel: Request timed out after", timeoutMs, "ms");
-			reject(
-				new SubtitleError(
-					`Request timed out after ${timeoutMs}ms. Is the backend server running at http://127.0.0.1:8000?`,
-					"TIMEOUT",
-					undefined,
-					url,
-				),
-			);
+			reject(buildTimeoutError(url, timeoutMs, SUBTITLES_BASE_URL));
 		}, timeoutMs);
 
 		// Check for external cancellation
@@ -569,7 +560,7 @@ async function directFetchWithTimeout(
 			throw new SubtitleError(`Request timed out after ${timeoutMs}ms`, "TIMEOUT", undefined, url);
 		}
 		throw new SubtitleError(
-			`Network request failed: ${err instanceof Error ? err.message : "Unknown error"}. Is the backend server running at http://127.0.0.1:8000?`,
+			`Network request failed: ${err instanceof Error ? err.message : "Unknown error"}. ${SUBTITLES_BASE_URL ? `Is the backend server reachable at ${SUBTITLES_BASE_URL}?` : "The backend server is unreachable."}`,
 			"NETWORK_ERROR",
 			err instanceof Error ? err : undefined,
 			url,
@@ -599,6 +590,25 @@ function getRetryDelay(attempt: number, baseDelay = RETRY_BASE_DELAY_MS, maxDela
 
 	const jitter = Math.random() * 0.3 * exponentialDelay;
 	return Math.min(exponentialDelay + jitter, maxDelay);
+}
+
+/**
+ * Build the SubtitleError thrown when a request times out.
+ *
+ * Bug 1.1: the user-facing message used to hardcode "http://127.0.0.1:8000"
+ * regardless of `VITE_SUBTITLES_BASE_URL`. Prod users running against a
+ * real backend saw a misleading localhost hint. The new helper embeds the
+ * *actual* configured base URL in the message and falls back to a generic
+ * phrase when no base URL is configured.
+ */
+export function buildTimeoutError(url: string, timeoutMs: number, baseUrl: string): SubtitleError {
+	const where = baseUrl ? ` at ${baseUrl}` : "";
+	return new SubtitleError(
+		`Request timed out after ${timeoutMs}ms. Is the backend server reachable${where}?`,
+		"TIMEOUT",
+		undefined,
+		url,
+	);
 }
 
 export function isRetryableError(error: SubtitleError): boolean {
@@ -680,7 +690,9 @@ export { checkBackendHealth, clearHealthCheckCache as resetBackendHealthCheck } 
  */
 export async function clearHealthCheckCache(): Promise<void> {
 	await clearHealthCache();
-	hasShownBackendUnavailableToast = false;
+	// Bug 1.8: also reset the persisted toast flag so a successful retry
+	// re-arms the user notification.
+	await setBackendUnavailableToastFlag(false);
 }
 
 export async function fetchYoutubeSubtitles(
@@ -707,12 +719,13 @@ export async function fetchYoutubeSubtitles(
 	const isHealthy = await checkBackendHealth();
 	if (!isHealthy) {
 		// Skip retries if backend is known to be down
-		if (!hasShownBackendUnavailableToast) {
+		const hasShown = await loadBackendUnavailableToastFlag();
+		if (!hasShown) {
 			toast.error("YouTube subtitle backend is unavailable. Subtitles will be skipped.", {
 				id: "backend-unavailable",
 				duration: 5000,
 			});
-			hasShownBackendUnavailableToast = true;
+			await setBackendUnavailableToastFlag(true);
 		}
 		throw new SubtitleError(
 			"YouTube subtitle backend is unavailable. Subtitles will be skipped.",
@@ -721,8 +734,9 @@ export async function fetchYoutubeSubtitles(
 			youtubeUrl,
 		);
 	} else {
-		// Reset the toast flag if backend is healthy again
-		hasShownBackendUnavailableToast = false;
+		// Reset the toast flag if backend is healthy again so the user gets
+		// re-notified if the backend goes down a second time.
+		await setBackendUnavailableToastFlag(false);
 	}
 
 	const cached = await getCachedSubtitle(videoId, format, effectiveLang);

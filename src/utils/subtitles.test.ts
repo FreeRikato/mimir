@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SubtitleError } from "../types";
-import { isRetryableError } from "./subtitles";
+import { buildTimeoutError, isRetryableError } from "./subtitles";
 
 describe("isRetryableError (subtitles)", () => {
 	it("retries TIMEOUT", () => {
@@ -48,5 +48,37 @@ describe("isRetryableError (subtitles)", () => {
 		// haven't been updated to pass statusCode.
 		const err = new SubtitleError("unknown", "API_ERROR", undefined, "https://api.example.com");
 		expect(isRetryableError(err)).toBe(false);
+	});
+});
+
+describe("buildTimeoutError (bug 1.1: hardcoded 127.0.0.1:8000 in user message)", () => {
+	it("uses the provided backend base URL in the user-facing message", () => {
+		const err = buildTimeoutError("https://api.example.com/subtitles?videoId=abc", 30_000, "https://api.mimir.io");
+		expect(err).toBeInstanceOf(SubtitleError);
+		expect(err.code).toBe("TIMEOUT");
+		// Must mention the *actual* configured base, not a hardcoded localhost.
+		expect(err.message).toContain("api.mimir.io");
+		expect(err.message).not.toContain("127.0.0.1");
+	});
+
+	it("falls back to a generic phrase when no base URL is configured", () => {
+		const err = buildTimeoutError("https://api.example.com/x", 30_000, "");
+		expect(err).toBeInstanceOf(SubtitleError);
+		expect(err.code).toBe("TIMEOUT");
+		// Should not invent a URL out of thin air.
+		expect(err.message).not.toContain("127.0.0.1");
+		expect(err.message).not.toContain("http://");
+		// And the configured URL field is preserved for diagnostics.
+		expect(err.url).toBe("https://api.example.com/x");
+	});
+
+	it("includes the timeout duration so the user knows how long we waited", () => {
+		const err = buildTimeoutError("https://x", 12_345, "https://api.example.com");
+		expect(err.message).toContain("12345");
+	});
+
+	it("preserves the original URL the request was targeting", () => {
+		const err = buildTimeoutError("https://youtube.com/watch?v=xyz", 5000, "https://api.example.com");
+		expect(err.url).toBe("https://youtube.com/watch?v=xyz");
 	});
 });
