@@ -6,9 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded PR runs; never cancel pushes to main.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -26,16 +32,63 @@ jobs:
       - name: Setup Biome
         uses: biomejs/setup-biome@v2
         with:
-          version: latest
+          version: 2.4.16
       - name: Run Biome
         run: biome ci .
 
-  build:
+  typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: quality
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: TypeScript type-check
+        run: npx tsc -b --noEmit
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: quality
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run vitest
+        run: npm test
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: quality
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -45,3 +98,12 @@ jobs:
         run: npm ci
       - name: Build
         run: npm run build
+      - name: Validate MV3 manifest
+        run: node scripts/validate-manifest.mjs dist/manifest.json
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mimir-dist
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
