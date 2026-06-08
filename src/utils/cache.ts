@@ -271,6 +271,7 @@ export async function getCachedTabs(): Promise<DomainGroup[] | null> {
 }
 
 let cacheWriteLock: Promise<void> | null = null;
+let contentCacheWriteLock: Promise<void> | null = null;
 
 export async function setCachedTabs(data: DomainGroup[]): Promise<void> {
 	// Wait for any existing write operation to complete before starting a new one
@@ -403,74 +404,87 @@ export async function setCachedContent(
 	tabId: number,
 	data: { text: string; title: string; url: string },
 ): Promise<void> {
-	try {
-		const cacheKey = `${CONTENT_CACHE_PREFIX}${tabId}`;
-		const timestamp = Date.now();
+	// Serialize concurrent writes so metadata read-modify-write is atomic.
+	// Without this lock, two parallel extractions both read the same
+	// metadata snapshot, both call setCacheMetadata, and the second call's
+	// full-object write silently overwrites the first's entries — dropping
+	// one of the rows and corrupting totalSize.
+	if (contentCacheWriteLock) {
+		await contentCacheWriteLock;
+	}
 
-		const entry: ExtractedContentEntry = {
-			text: data.text,
-			title: data.title,
-			url: data.url,
-			timestamp,
-			size: 0, // Will be calculated below
-			accessCount: 1,
-			lastAccess: timestamp,
-		};
-
-		// Calculate the size of the new entry
-		const entrySize = calculateSize(entry);
-		entry.size = entrySize;
-
-		if (entrySize > MAX_CONTENT_ENTRY_SIZE) {
-			console.debug(
-				`Skipping content cache for tab ${tabId}: entry ${entrySize} bytes exceeds per-entry limit ${MAX_CONTENT_ENTRY_SIZE}`,
-			);
-			return;
-		}
-
-		// Ensure there's enough space before writing
-		await ensureCacheSpace(entrySize);
-
-		// Check if we're overwriting an existing entry
-		const metadata = await getCacheMetadata();
-		const existingEntry = metadata.entries.find((e) => e.key === cacheKey);
-		if (existingEntry) {
-			// Account for the size of the entry we're replacing
-			metadata.totalSize -= existingEntry.size;
-		}
-
-		// Write the cache entry
+	contentCacheWriteLock = (async () => {
 		try {
-			await chrome.storage.session.set({ [cacheKey]: entry });
-			// Update metadata after successful write
-			await updateEntryMetadata(cacheKey, entrySize, timestamp);
-		} catch (setErr) {
-			// If we still get a quota error, try emergency eviction
-			if (setErr instanceof Error && (setErr.message.includes("QUOTA") || setErr.message.includes("quota"))) {
-				console.warn("Storage quota exceeded, performing emergency eviction");
+			const cacheKey = `${CONTENT_CACHE_PREFIX}${tabId}`;
+			const timestamp = Date.now();
 
-				// Rebuild metadata to ensure accuracy
-				await rebuildMetadata();
+			const entry: ExtractedContentEntry = {
+				text: data.text,
+				title: data.title,
+				url: data.url,
+				timestamp,
+				size: 0, // Will be calculated below
+				accessCount: 1,
+				lastAccess: timestamp,
+			};
 
-				// Try evicting multiple entries
-				for (let i = 0; i < 5; i++) {
-					await evictLRUEntry();
-				}
+			// Calculate the size of the new entry
+			const entrySize = calculateSize(entry);
+			entry.size = entrySize;
 
-				// Retry write
+			if (entrySize > MAX_CONTENT_ENTRY_SIZE) {
+				console.debug(
+					`Skipping content cache for tab ${tabId}: entry ${entrySize} bytes exceeds per-entry limit ${MAX_CONTENT_ENTRY_SIZE}`,
+				);
+				return;
+			}
+
+			// Ensure there's enough space before writing
+			await ensureCacheSpace(entrySize);
+
+			// Check if we're overwriting an existing entry
+			const metadata = await getCacheMetadata();
+			const existingEntry = metadata.entries.find((e) => e.key === cacheKey);
+			if (existingEntry) {
+				// Account for the size of the entry we're replacing
+				metadata.totalSize -= existingEntry.size;
+			}
+
+			// Write the cache entry
+			try {
 				await chrome.storage.session.set({ [cacheKey]: entry });
+				// Update metadata after successful write
 				await updateEntryMetadata(cacheKey, entrySize, timestamp);
+			} catch (setErr) {
+				// If we still get a quota error, try emergency eviction
+				if (setErr instanceof Error && (setErr.message.includes("QUOTA") || setErr.message.includes("quota"))) {
+					console.warn("Storage quota exceeded, performing emergency eviction");
+
+					// Rebuild metadata to ensure accuracy
+					await rebuildMetadata();
+
+					// Try evicting multiple entries
+					for (let i = 0; i < 5; i++) {
+						await evictLRUEntry();
+					}
+
+					// Retry write
+					await chrome.storage.session.set({ [cacheKey]: entry });
+					await updateEntryMetadata(cacheKey, entrySize, timestamp);
+				} else {
+					throw setErr;
+				}
+			}
+		} catch (err) {
+			if (err instanceof Error && err.message.includes("QUOTA")) {
+				console.warn("Quota exceeded while writing content cache (after retry):", err);
 			} else {
-				throw setErr;
+				console.warn("Failed to write content cache:", err);
 			}
 		}
-	} catch (err) {
-		if (err instanceof Error && err.message.includes("QUOTA")) {
-			console.warn("Quota exceeded while writing content cache (after retry):", err);
-		} else {
-			console.warn("Failed to write content cache:", err);
-		}
-	}
+	})();
+
+	await contentCacheWriteLock;
 }
 
 export async function removeExpiredContentCache(): Promise<void> {
