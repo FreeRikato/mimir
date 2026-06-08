@@ -6,6 +6,7 @@
  */
 
 import type { ExportFormat, ExtractedData, HistoryEntry, SearchQuery } from "../types";
+import { entryMatchesDomains } from "./domainFilter";
 
 const DB_NAME = "mimir_history";
 const DB_VERSION = 1;
@@ -230,10 +231,11 @@ class IndexedDB {
 			entries = entries.filter((entry) => entry.timestamp <= to);
 		}
 
-		// Filter by domains
+		// Filter by domains. Bug 1.10: also fall back to each item's URL
+		// hostname so a stale `entry.domains` (e.g. saved before a URL hostname
+		// change) doesn't cause a miss.
 		if (query.domains && query.domains.length > 0) {
-			const searchDomains = new Set(query.domains.map((d) => d.toLowerCase()));
-			entries = entries.filter((entry) => entry.domains.some((d) => searchDomains.has(d.toLowerCase())));
+			entries = entries.filter((entry) => entryMatchesDomains(entry, query.domains ?? []));
 		}
 
 		return entries;
