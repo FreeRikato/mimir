@@ -24,10 +24,12 @@ import type {
 } from "./types";
 import { SubtitleError } from "./types";
 import { getCachedContent, setCachedContent } from "./utils/cache";
+import { createClipboardFallback } from "./utils/clipboardFallback";
 import { downloadAsFile, formatExport, getMimeType } from "./utils/exporters";
 import { detectPdfCandidate } from "./utils/pdf";
 import { extractPdfContent } from "./utils/pdfExtraction";
 import { extractTextFromBuffer, extractTextFromFile } from "./utils/pdfExtractor";
+import { createLoadedGuard } from "./utils/persistedSetting";
 import { fetchRedditPost, isRedditPostUrl } from "./utils/reddit";
 import { getPageHTML } from "./utils/scripting";
 import {
@@ -42,47 +44,50 @@ import { closeTabsSafely, getTabsToRight } from "./utils/tabHelpers";
 import { formatXThread, isXTweetUrl, parseXTweetId, readXDataFromPage } from "./utils/xTwitter";
 import { isYouTubeUrl } from "./utils/youtube";
 
-// Pending clipboard data for retry when panel gets focus
-let pendingClipboardData: string | null = null;
-
 type ClipboardWriteOutcome = "copied" | "requires_manual_copy" | "failed";
 
+// Single source of truth for the pending clipboard channel. The previous
+// implementation kept a module-level `pendingClipboardData` variable and a
+// separate React state `pendingClipboardContent` that were set and cleared
+// in different code paths, allowing them to desync (see bug 1.7).
+const clipboardFallback = createClipboardFallback<string>();
+
 /**
- * Safely writes text to clipboard with focus check and user-friendly UX
- * When the document is not focused (e.g., keyboard shortcuts), stores the data.
+ * Safely writes text to clipboard with focus check and user-friendly UX.
+ * When the document is not focused (e.g. keyboard shortcuts), stores the
+ * data so a later focus event can retry.
  */
 async function safeWriteToClipboard(text: string): Promise<ClipboardWriteOutcome> {
-	// Check focus before attempting clipboard write
 	if (!document.hasFocus()) {
-		pendingClipboardData = text;
+		clipboardFallback.setPending(text);
 		console.warn("Clipboard write skipped: document not focused. Data stored for retry on focus.");
 		return "requires_manual_copy";
 	}
 
 	try {
 		await navigator.clipboard.writeText(text);
-		pendingClipboardData = null;
+		clipboardFallback.clearPending();
 		return "copied";
 	} catch (err) {
-		// Check if it's a focus-related error (some browsers throw instead of checking hasFocus)
-		if (
-			err instanceof Error &&
-			(err.name === "NotAllowedError" || err.message.includes("not focused") || err.message.includes("not allowed"))
-		) {
-			pendingClipboardData = text;
+		// Some browsers throw on focus loss instead of just returning false
+		// from hasFocus().
+		if (err instanceof Error && err.name === "NotAllowedError") {
+			clipboardFallback.setPending(text);
 			console.warn("Clipboard write failed: focus required. Data stored for retry on focus.");
 			return "requires_manual_copy";
 		}
 		console.error("Clipboard write failed:", err);
+		clipboardFallback.clearPending();
 		return "failed";
 	}
 }
 
 /**
- * Clears any pending clipboard data
+ * Clears any pending clipboard data. Exposed for callers that need to
+ * reset the fallback channel (e.g. after a successful manual copy).
  */
 function clearPendingClipboard() {
-	pendingClipboardData = null;
+	clipboardFallback.clearPending();
 }
 
 // Custom hook to auto-hide progress bars after cancellation
@@ -699,6 +704,11 @@ export function SidePanelApp() {
 	// Track mount state to prevent state updates on unmounted component
 	const isMountedRef = useRef(true);
 
+	// Guards that prevent the subtitle format/language "save" effect
+	// from clobbering storage on first mount (see bug 1.6).
+	const subtitleFormatGuardRef = useRef(createLoadedGuard());
+	const subtitleLanguageGuardRef = useRef(createLoadedGuard());
+
 	// State for showing manual copy button when clipboard is unavailable
 	const [showManualCopyButton, setShowManualCopyButton] = useState(false);
 	const [pendingClipboardContent, setPendingClipboardContent] = useState<string | null>(null);
@@ -715,21 +725,29 @@ export function SidePanelApp() {
 		};
 	}, []);
 
-	// Focus event listener to auto-retry clipboard when user focuses the panel
+	// Focus event listener to auto-retry clipboard when user focuses the panel.
+	// The single source of truth for pending data is `clipboardFallback`; React
+	// state mirrors it so the manual-copy button can show / hide.
 	useEffect(() => {
 		const handleFocus = async () => {
-			// Check if there's pending clipboard data to retry
-			if (pendingClipboardData) {
-				try {
-					await navigator.clipboard.writeText(pendingClipboardData);
-					clearPendingClipboard();
-					setPendingClipboardContent(null);
-					setShowManualCopyButton(false);
-					toast.success("Copied to clipboard!", { id: "clipboard-auto-success" });
-				} catch (err) {
-					console.warn("Auto-retry clipboard failed:", err);
-				}
+			if (!clipboardFallback.hasPending()) return;
+			const outcome = await clipboardFallback.tryRetry({
+				hasFocus: () => document.hasFocus(),
+				write: (value) => navigator.clipboard.writeText(value),
+			});
+			if (outcome === "copied") {
+				setPendingClipboardContent(null);
+				setShowManualCopyButton(false);
+				toast.success("Copied to clipboard!", { id: "clipboard-auto-success" });
+			} else if (outcome === "failed") {
+				// Non-focus failure: controller already cleared the pending
+				// data. Mirror that in React state.
+				setPendingClipboardContent(null);
+				setShowManualCopyButton(false);
+				toast.error("Clipboard unavailable");
 			}
+			// outcome === "requires_manual_copy" — pending data preserved,
+			// UI button stays visible.
 		};
 
 		document.addEventListener("focus", handleFocus, true); // Use capture phase
@@ -777,38 +795,52 @@ export function SidePanelApp() {
 		};
 	}, []);
 
-	// Effect to load subtitle format from storage
+	// Effect to load subtitle format from storage. Marks the guard as loaded
+	// only after the stored value lands in React state, so a save that fires
+	// from the initial state does not clobber storage.
 	useEffect(() => {
+		let cancelled = false;
 		const loadSubtitleFormat = async () => {
 			const format = await getSubtitleFormatSetting();
+			if (cancelled) return;
 			setSubtitleFormat(format);
+			subtitleFormatGuardRef.current.markLoaded();
 		};
 		loadSubtitleFormat();
+		return () => {
+			cancelled = true;
+		};
 	}, []);
 
-	// Effect to save subtitle format to storage when it changes
+	// Effect to save subtitle format to storage when it changes. The guard
+	// suppresses the initial-mount save so the default state does not
+	// overwrite the stored value before the load resolves.
 	useEffect(() => {
-		const saveSubtitleFormat = async () => {
-			await setSubtitleFormatSetting(subtitleFormat);
-		};
-		saveSubtitleFormat();
+		void subtitleFormatGuardRef.current.save(subtitleFormat, setSubtitleFormatSetting);
 	}, [subtitleFormat]);
 
-	// Effect to load subtitle language from storage
+	// Effect to load subtitle language from storage. Marks the guard as loaded
+	// only after the stored value lands in React state, so a save that fires
+	// from the initial state does not clobber storage.
 	useEffect(() => {
+		let cancelled = false;
 		const loadSubtitleLanguage = async () => {
 			const lang = await getSubtitleLanguageSetting();
+			if (cancelled) return;
 			setSubtitleLanguage(lang);
+			subtitleLanguageGuardRef.current.markLoaded();
 		};
 		loadSubtitleLanguage();
+		return () => {
+			cancelled = true;
+		};
 	}, []);
 
-	// Effect to save subtitle language to storage when it changes
+	// Effect to save subtitle language to storage when it changes. The guard
+	// suppresses the initial-mount save so the default state does not
+	// overwrite the stored value before the load resolves.
 	useEffect(() => {
-		const saveSubtitleLanguage = async () => {
-			await setSubtitleLanguageSetting(subtitleLanguage);
-		};
-		saveSubtitleLanguage();
+		void subtitleLanguageGuardRef.current.save(subtitleLanguage, setSubtitleLanguageSetting);
 	}, [subtitleLanguage]);
 
 	const resetClipboardFallbackState = useCallback(() => {
@@ -1290,9 +1322,11 @@ export function SidePanelApp() {
 
 		try {
 			await navigator.clipboard.writeText(pendingClipboardContent);
+			// Clear the controller FIRST so the focus handler can't race and
+			// re-trigger; then update React state.
+			clearPendingClipboard();
 			setPendingClipboardContent(null);
 			setShowManualCopyButton(false);
-			clearPendingClipboard();
 			toast.success("Copied to clipboard!");
 		} catch (err) {
 			console.error("Manual copy failed:", err);
