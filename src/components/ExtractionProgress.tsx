@@ -1,5 +1,6 @@
 import { AlertTriangle, CheckCircle, Loader2, X, XCircle } from "lucide-react";
 import type { ExtractionProgress } from "../types";
+import { computeEtaMs, formatEta } from "./ExtractionProgress.calc";
 
 interface ExtractionProgressProps {
 	progress: ExtractionProgress;
@@ -11,20 +12,16 @@ export function ExtractionProgressDisplay({ progress, onCancel }: ExtractionProg
 	const totalProcessed = completed + failed;
 	const percentComplete = total > 0 ? (totalProcessed / total) * 100 : 0;
 
-	// Calculate ETA
-	const elapsed = Date.now() - startTime;
-	const avgTimePerTab = totalProcessed > 0 ? elapsed / totalProcessed : 0;
-	const remaining = total - totalProcessed;
-	const etaMs = Math.max(0, avgTimePerTab * remaining);
-
-	const formatETA = (ms: number): string => {
-		// Hide ETA until at least 2 tabs are processed for more stable estimates
-		if (ms < 1000 || !isFinite(ms) || totalProcessed < 2) return "";
-		const seconds = Math.ceil(ms / 1000);
-		if (seconds < 60) return `~${seconds}s remaining`;
-		const minutes = Math.ceil(seconds / 60);
-		return `~${minutes}m remaining`;
-	};
+	// Bug 1.21: ETA logic moved to ExtractionProgress.calc so it can be
+	// unit-tested. The previous inline code produced "ETA: NaN" or
+	// "ETA: -30s" for boundary cases (startTime in the future, totalProcessed
+	// === 0). The new helper guards explicitly.
+	const etaMs = computeEtaMs({
+		now: Date.now(),
+		startTime,
+		totalProcessed,
+		remaining: total - totalProcessed,
+	});
 
 	// Cancelled state styling
 	if (isCancelled) {
@@ -103,7 +100,9 @@ export function ExtractionProgressDisplay({ progress, onCancel }: ExtractionProg
 						</span>
 					)}
 				</div>
-				{formatETA(etaMs) && <span className="text-glass-muted">{formatETA(etaMs)}</span>}
+				{formatEta(etaMs, totalProcessed) && (
+					<span className="text-glass-muted">{formatEta(etaMs, totalProcessed)}</span>
+				)}
 			</div>
 
 			{currentTabTitle && (
