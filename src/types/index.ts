@@ -137,13 +137,15 @@ export class SubtitleError extends Error {
 	public readonly code: SubtitleErrorCode;
 	public readonly originalError?: Error;
 	public readonly url?: string;
+	public readonly statusCode?: number;
 
-	constructor(message: string, code: SubtitleErrorCode, originalError?: Error, url?: string) {
+	constructor(message: string, code: SubtitleErrorCode, originalError?: Error, url?: string, statusCode?: number) {
 		super(message);
 		this.name = "SubtitleError";
 		this.code = code;
 		this.originalError = originalError;
 		this.url = url;
+		this.statusCode = statusCode;
 	}
 }
 

@@ -296,6 +296,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 		return true;
 	}
 
+	// Bug 1.1: previously this catch-all called `sendResponse({ status: "received" })`
+	// synchronously without `return true`. In MV3 the message channel can close
+	// before the response is delivered, so callers waiting for a reply would see
+	// nothing. Logging is enough; future message types that need an async response
+	// MUST `return true` from their branch (see the handlers above).
 	console.log("Background: Received message:", message);
-	sendResponse({ status: "received" });
 });

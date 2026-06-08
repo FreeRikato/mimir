@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import { SubtitleError } from "../types";
 import { checkBackendHealth, clearHealthCheckCache as clearHealthCache } from "./backendHealth";
+import { normalizeBackendBaseUrl } from "./backendUrl";
 import { isYouTubeUrl, normalizeYouTubeUrl } from "./youtube";
 
 const SUBTITLES_BASE_URL = import.meta.env.VITE_SUBTITLES_BASE_URL ?? "";
@@ -410,16 +411,7 @@ export function getSubtitlesApiUrl(
 	format: SubtitleExtractionFormat = "json",
 	lang?: string,
 ): string {
-	let baseUrl = SUBTITLES_BASE_URL || (import.meta.env.DEV ? "127.0.0.1:8000" : "");
-	if (!baseUrl) {
-		throw new Error("SUBTITLES_BASE_URL environment variable not set");
-	}
-	// Add protocol if missing (Fetch API requires a proper URL scheme)
-	if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
-		baseUrl = "http://" + baseUrl;
-	}
-	// Normalize localhost to 127.0.0.1 (more reliable)
-	baseUrl = baseUrl.replace("localhost", "127.0.0.1");
+	const baseUrl = normalizeBackendBaseUrl(SUBTITLES_BASE_URL, import.meta.env.DEV);
 	// Use format parameter to get subtitle data in requested format.
 	// Only append `lang` when explicitly set so the backend keeps its default for legacy callers.
 	const params = new URLSearchParams({ video_url: youtubeUrl, format });
@@ -609,13 +601,19 @@ function getRetryDelay(attempt: number, baseDelay = RETRY_BASE_DELAY_MS, maxDela
 	return Math.min(exponentialDelay + jitter, maxDelay);
 }
 
-function isRetryableError(error: SubtitleError): boolean {
+export function isRetryableError(error: SubtitleError): boolean {
 	if (error.code === "TIMEOUT") return true;
 	if (error.code === "NETWORK_ERROR") return true;
 	if (error.code === "SERVER_ERROR") return true;
 	if (error.code === "API_ERROR") {
-		const statusCode = (error as SubtitleError & { statusCode?: number }).statusCode;
-		return statusCode === 429 || (statusCode !== undefined && statusCode >= 500);
+		// Bug 1.2: statusCode was previously missing from SubtitleError, so this
+		// branch was always returning false. With the field populated by callers,
+		// transient 429/5xx errors are retried instead of failing on first attempt.
+		// Bug 1.2: 429/5xx/408 are transient; other 4xx (400/401/403/404) should NOT retry.
+		const statusCode = error.statusCode;
+		if (statusCode === 408 || statusCode === 429) return true;
+		if (statusCode !== undefined && statusCode >= 500) return true;
+		return false;
 	}
 	return false;
 }
@@ -758,13 +756,19 @@ export async function fetchYoutubeSubtitles(
 					throw new SubtitleError(errorMessage, "NO_SUBTITLES", undefined, youtubeUrl);
 				}
 				if (response.status === 429 || errorType === "rate_limit_exceeded") {
-					throw new SubtitleError("Rate limit exceeded", "SERVER_ERROR", undefined, youtubeUrl);
+					throw new SubtitleError("Rate limit exceeded", "SERVER_ERROR", undefined, youtubeUrl, response.status);
 				}
 				if (response.status >= 500) {
-					throw new SubtitleError(`Backend server error: ${response.status}`, "SERVER_ERROR", undefined, youtubeUrl);
+					throw new SubtitleError(
+						`Backend server error: ${response.status}`,
+						"SERVER_ERROR",
+						undefined,
+						youtubeUrl,
+						response.status,
+					);
 				}
 
-				throw new SubtitleError(errorMessage, "API_ERROR", undefined, youtubeUrl);
+				throw new SubtitleError(errorMessage, "API_ERROR", undefined, youtubeUrl, response.status);
 			}
 
 			let result: { title: string; text: string; subtitles: SubtitleEntry[]; subtitleCount: number };

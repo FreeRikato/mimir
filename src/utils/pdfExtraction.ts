@@ -1,5 +1,6 @@
 import type { PdfExtractionOptions, PdfExtractionResponse } from "../types";
 import { SubtitleError } from "../types";
+import { normalizeBackendBaseUrl } from "./backendUrl";
 
 const PDF_REQUEST_TIMEOUT_MS = 60000;
 const PDF_RETRY_MAX_ATTEMPTS = 2;
@@ -27,20 +28,17 @@ interface PdfBackendSuccessPayload {
 	};
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
-	let normalized = baseUrl || (import.meta.env.DEV ? "127.0.0.1:8000" : "");
-	if (!normalized) {
-		throw new SubtitleError("SUBTITLES_BASE_URL environment variable not set", "NETWORK_ERROR");
-	}
-	if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
-		normalized = `http://${normalized}`;
-	}
-	return normalized.replace("localhost", "127.0.0.1");
-}
-
 function getPdfApiUrl(): string {
-	const baseUrl = normalizeBaseUrl(SUBTITLES_BASE_URL);
-	return `${baseUrl}/extract/pdf`;
+	try {
+		const baseUrl = normalizeBackendBaseUrl(SUBTITLES_BASE_URL, import.meta.env.DEV);
+		return `${baseUrl}/extract/pdf`;
+	} catch (err) {
+		throw new SubtitleError(
+			err instanceof Error ? err.message : "Backend URL not configured",
+			"NETWORK_ERROR",
+			err instanceof Error ? err : undefined,
+		);
+	}
 }
 
 function getRetryDelay(attempt: number): number {
@@ -51,28 +49,36 @@ function getRetryDelay(attempt: number): number {
 
 function mapPdfStatusToError(message: string, status?: number, url?: string): SubtitleError {
 	if (status === 413) {
-		return new SubtitleError(message || "PDF too large", "PDF_TOO_LARGE", undefined, url);
+		return new SubtitleError(message || "PDF too large", "PDF_TOO_LARGE", undefined, url, status);
 	}
 	if (status === 415 || status === 422) {
-		return new SubtitleError(message || "Unsupported PDF", "PDF_UNSUPPORTED", undefined, url);
+		return new SubtitleError(message || "Unsupported PDF", "PDF_UNSUPPORTED", undefined, url, status);
 	}
 	if (status === 423 || status === 451) {
-		return new SubtitleError(message || "Cannot access PDF", "PDF_ACCESS_DENIED", undefined, url);
+		return new SubtitleError(message || "Cannot access PDF", "PDF_ACCESS_DENIED", undefined, url, status);
 	}
 	if (status === 503) {
-		return new SubtitleError(message || "OCR backend unavailable", "OCR_UNAVAILABLE", undefined, url);
+		return new SubtitleError(message || "OCR backend unavailable", "OCR_UNAVAILABLE", undefined, url, status);
 	}
 	if (status !== undefined && status >= 500) {
-		return new SubtitleError(message || `Backend server error: ${status}`, "SERVER_ERROR", undefined, url);
+		return new SubtitleError(message || `Backend server error: ${status}`, "SERVER_ERROR", undefined, url, status);
 	}
-	return new SubtitleError(message || "PDF extraction failed", "API_ERROR", undefined, url);
+	return new SubtitleError(message || "PDF extraction failed", "API_ERROR", undefined, url, status);
 }
 
-function isRetryableError(error: SubtitleError): boolean {
+export function isRetryableError(error: SubtitleError): boolean {
 	if (error.code === "TIMEOUT") return true;
 	if (error.code === "NETWORK_ERROR") return true;
 	if (error.code === "SERVER_ERROR") return true;
 	if (error.code === "OCR_UNAVAILABLE") return true;
+	if (error.code === "API_ERROR") {
+		// Symmetric with subtitles.ts: 429/5xx retried, other 4xx not.
+		// Symmetric with subtitles.ts: 429/5xx/408 retried, other 4xx not.
+		const statusCode = error.statusCode;
+		if (statusCode === 408 || statusCode === 429) return true;
+		if (statusCode !== undefined && statusCode >= 500) return true;
+		return false;
+	}
 	return false;
 }
 
