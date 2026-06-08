@@ -12,8 +12,6 @@ import { checkBackendHealth, clearHealthCheckCache as clearHealthCache } from ".
 import { isYouTubeUrl, normalizeYouTubeUrl } from "./youtube";
 
 const SUBTITLES_BASE_URL = import.meta.env.VITE_SUBTITLES_BASE_URL ?? "";
-const SUBTITLES_API_KEY = import.meta.env.VITE_SUBTITLES_API_KEY ?? "";
-
 const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 500;
 const RETRY_MAX_DELAY_MS = 5000;
@@ -438,11 +436,6 @@ export function getApiHeaders(): Record<string, string> {
 		"Content-Type": "application/json",
 	};
 
-	// Add API key authentication if configured
-	if (SUBTITLES_API_KEY) {
-		headers["X-API-Key"] = SUBTITLES_API_KEY;
-	}
-
 	return headers;
 }
 
@@ -486,70 +479,67 @@ async function fetchFromBackground(
 
 		try {
 			console.log("SidePanel: Sending FETCH_SUBTITLES message to background worker...");
-			chrome.runtime.sendMessage(
-				{ type: "FETCH_SUBTITLES", url, format, apiKey: SUBTITLES_API_KEY },
-				(response?: BackgroundFetchResponse) => {
-					clearTimeout(timeoutId);
-					const elapsed = Date.now() - startTime;
-					console.log(`SidePanel: Response received from background in ${elapsed}ms`);
-					console.log("SidePanel: Response:", response);
+			chrome.runtime.sendMessage({ type: "FETCH_SUBTITLES", url, format }, (response?: BackgroundFetchResponse) => {
+				clearTimeout(timeoutId);
+				const elapsed = Date.now() - startTime;
+				console.log(`SidePanel: Response received from background in ${elapsed}ms`);
+				console.log("SidePanel: Response:", response);
 
-					if (chrome.runtime.lastError) {
-						console.error("SidePanel: chrome.runtime.lastError detected:", chrome.runtime.lastError.message);
-						// Try direct fetch as fallback
-						console.log("SidePanel: Trying direct fetch as fallback...");
-						directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
+				if (chrome.runtime.lastError) {
+					console.error("SidePanel: chrome.runtime.lastError detected:", chrome.runtime.lastError.message);
+					// Try direct fetch as fallback
+					console.log("SidePanel: Trying direct fetch as fallback...");
+					directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
+					return;
+				}
+
+				if (!response) {
+					console.log("SidePanel: No response from background, trying direct fetch...");
+					directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
+					return;
+				}
+
+				if (!response.success) {
+					console.log("SidePanel: Background returned error:", response.error);
+
+					// If background received a real HTTP response, return it directly without a second request.
+					if (typeof response.status === "number") {
+						const errorPayload = response.data ?? {
+							detail: response.error || `API request failed: ${response.status}`,
+						};
+						const mockErrorResponse = {
+							ok: false,
+							status: response.status,
+							statusText: response.statusText || "Error",
+							json: () => Promise.resolve(errorPayload),
+							text: () =>
+								Promise.resolve(typeof errorPayload === "string" ? errorPayload : JSON.stringify(errorPayload)),
+						} as unknown as Response;
+
+						resolve(mockErrorResponse);
 						return;
 					}
 
-					if (!response) {
-						console.log("SidePanel: No response from background, trying direct fetch...");
-						directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
-						return;
-					}
+					// Fall back to direct fetch only for runtime/background transport failures.
+					console.log("SidePanel: Trying direct fetch as fallback...");
+					directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
+					return;
+				}
 
-					if (!response.success) {
-						console.log("SidePanel: Background returned error:", response.error);
+				console.log("SidePanel: Successfully received subtitle data");
+				// Create a mock Response object for compatibility
+				// For VTT format, response.data is raw text; for JSON/text formats, it's parsed JSON
+				const mockResponse = {
+					ok: true,
+					status: typeof response.status === "number" ? response.status : 200,
+					statusText: response.statusText || "OK",
+					json: () => Promise.resolve(response.data),
+					text: () =>
+						Promise.resolve(typeof response.data === "string" ? response.data : JSON.stringify(response.data)),
+				} as unknown as Response;
 
-						// If background received a real HTTP response, return it directly without a second request.
-						if (typeof response.status === "number") {
-							const errorPayload = response.data ?? {
-								detail: response.error || `API request failed: ${response.status}`,
-							};
-							const mockErrorResponse = {
-								ok: false,
-								status: response.status,
-								statusText: response.statusText || "Error",
-								json: () => Promise.resolve(errorPayload),
-								text: () =>
-									Promise.resolve(typeof errorPayload === "string" ? errorPayload : JSON.stringify(errorPayload)),
-							} as unknown as Response;
-
-							resolve(mockErrorResponse);
-							return;
-						}
-
-						// Fall back to direct fetch only for runtime/background transport failures.
-						console.log("SidePanel: Trying direct fetch as fallback...");
-						directFetchWithTimeout(url, format, timeoutMs).then(resolve).catch(reject);
-						return;
-					}
-
-					console.log("SidePanel: Successfully received subtitle data");
-					// Create a mock Response object for compatibility
-					// For VTT format, response.data is raw text; for JSON/text formats, it's parsed JSON
-					const mockResponse = {
-						ok: true,
-						status: typeof response.status === "number" ? response.status : 200,
-						statusText: response.statusText || "OK",
-						json: () => Promise.resolve(response.data),
-						text: () =>
-							Promise.resolve(typeof response.data === "string" ? response.data : JSON.stringify(response.data)),
-					} as unknown as Response;
-
-					resolve(mockResponse);
-				},
-			);
+				resolve(mockResponse);
+			});
 		} catch (err) {
 			clearTimeout(timeoutId);
 			console.error("SidePanel: Exception sending message:", err);
@@ -763,28 +753,6 @@ export async function fetchYoutubeSubtitles(
 				// Map status codes to error codes
 				if (response.status === 400 || errorType === "validation_error") {
 					throw new SubtitleError(errorMessage, "INVALID_URL", undefined, youtubeUrl);
-				}
-				if (response.status === 401 || errorType === "unauthorized") {
-					throw new SubtitleError(
-						"Unauthorized: Please check your API key configuration (VITE_SUBTITLES_API_KEY)",
-						"API_ERROR",
-						undefined,
-						youtubeUrl,
-					);
-				}
-				if (response.status === 403 || errorType === "forbidden") {
-					const isAuthError =
-						errorMessage.toLowerCase().includes("api key") ||
-						errorMessage.toLowerCase().includes("unauthorized") ||
-						errorMessage.toLowerCase().includes("forbidden");
-					throw new SubtitleError(
-						isAuthError
-							? "Access forbidden: Invalid or missing API key. Please configure VITE_SUBTITLES_API_KEY in your .env file."
-							: "Access forbidden",
-						"API_ERROR",
-						undefined,
-						youtubeUrl,
-					);
 				}
 				if (response.status === 404 || errorType === "download_failed" || errorType === "not_found") {
 					throw new SubtitleError(errorMessage, "NO_SUBTITLES", undefined, youtubeUrl);

@@ -7,8 +7,6 @@ const PDF_RETRY_BASE_DELAY_MS = 600;
 const PDF_RETRY_MAX_DELAY_MS = 4000;
 
 const SUBTITLES_BASE_URL = import.meta.env.VITE_SUBTITLES_BASE_URL ?? "";
-const SUBTITLES_API_KEY = import.meta.env.VITE_SUBTITLES_API_KEY ?? "";
-
 interface PdfBackgroundResponse {
 	success: boolean;
 	data?: unknown;
@@ -52,14 +50,6 @@ function getRetryDelay(attempt: number): number {
 }
 
 function mapPdfStatusToError(message: string, status?: number, url?: string): SubtitleError {
-	if (status === 401 || status === 403) {
-		return new SubtitleError(
-			"Unauthorized PDF extraction request. Check VITE_SUBTITLES_API_KEY.",
-			"API_ERROR",
-			undefined,
-			url,
-		);
-	}
 	if (status === 413) {
 		return new SubtitleError(message || "PDF too large", "PDF_TOO_LARGE", undefined, url);
 	}
@@ -104,7 +94,7 @@ async function fetchPdfFromBackground(
 
 		try {
 			chrome.runtime.sendMessage(
-				{ type: "EXTRACT_PDF", url: pdfUrl, apiUrl: getPdfApiUrl(), apiKey: SUBTITLES_API_KEY },
+				{ type: "EXTRACT_PDF", url: pdfUrl, apiUrl: getPdfApiUrl() },
 				(response?: PdfBackgroundResponse) => {
 					clearTimeout(timeoutId);
 

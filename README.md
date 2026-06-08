@@ -62,11 +62,10 @@ Vite bakes these in at build time. Configure them in `.env.local` (gitignored).
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `VITE_SUBTITLES_BASE_URL` | empty | Base URL of the FastAPI backend. The same service exposes the YouTube transcript endpoint and the `/extract/pdf` endpoint. If empty, both YouTube and remote-PDF extraction fail with a backend-unavailable toast. |
-| `VITE_SUBTITLES_API_KEY` | empty | Sent as the `X-API-Key` header from the background service worker for both subtitle and PDF requests. |
 
-Both are consumed by the **background service worker**, never the side panel. The SW
-proxies the request to bypass CORS and to attach the API key. The PDF backend
-(`/extract/pdf`) reuses the same base URL and API key as the subtitle backend.
+Consumed by the **background service worker**, never the side panel. The SW
+proxies the request to bypass CORS. The PDF backend (`/extract/pdf`) reuses
+the same base URL as the subtitle backend.
 
 ## Keyboard shortcuts
 
@@ -119,8 +118,7 @@ precedence — if a binding does not fire, something else owns that combination.
     (bails on PDFs); `src/content/xTwitter.ts` runs in the MAIN world on `x.com` and
     `twitter.com` to patch `window.fetch`.
 - **Background as a fetch proxy.** Subtitle and PDF requests are routed through
-  `chrome.runtime.sendMessage` so the service worker can attach the `X-API-Key` header
-  and avoid CORS. The side panel never calls the backend directly.
+  `chrome.runtime.sendMessage` to avoid CORS. The side panel never calls the backend directly.
 - **Storage split.**
   - `chrome.storage.session` — tab and content cache, LRU with a 9 MB cap and 5-minute
     TTL (see `src/utils/cache.ts`).
