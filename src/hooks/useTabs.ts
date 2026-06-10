@@ -141,6 +141,19 @@ export function useTabs() {
 		return () => chrome.storage.onChanged.removeListener(handleStorageChange);
 	}, []);
 
+	// RC-6: debounce semantics. The chrome.tabs.on* listeners below
+	// coalesce bursts (e.g. opening 20 tabs in a second) into one
+	// fetchTabs(true) call after a 500ms idle window. Semantics are
+	// "last write wins" - intermediate states between debounce ticks
+	// are not observed by the UI, which is fine for the tab list
+	// (the listener is also gated behind `inFlightFetchRef` so a
+	// fast re-fire is dropped if a fetch is already in flight).
+	//
+	// The chrome.storage.onChanged listener above is NOT debounced -
+	// it fires synchronously per change. Setting-flag consumers see
+	// every intermediate state. If a future setting needs an
+	// intermediate-state spinner, the listener above is where the
+	// switch to a leading-edge debounce would go.
 	useEffect(() => {
 		const debouncedListener = () => {
 			if (debounceTimerRef.current) {
