@@ -1,22 +1,49 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChromeTab } from "../types";
+import { createMountedRef } from "../utils/mountedRef";
 import { getHighlightedTabs } from "../utils/tabHelpers";
 
+/**
+ * Tracks the currently Chrome-highlighted tabs.
+ *
+ * Bug RC-5: the prior version called `setHighlightedTabs` and
+ * `setHighlightedCount` from async listeners without an `isMountedRef`
+ * guard. On a quick panel re-mount the listener could resolve after
+ * the component was already gone, producing the React 18 "Can't
+ * perform a state update on an unmounted component" warning. The
+ * sibling `useTabs` hook has the same pattern (inlined); this hook
+ * now uses the shared `createMountedRef()` helper for consistency.
+ */
 export function useHighlightedTabs() {
 	const [highlightedCount, setHighlightedCount] = useState(0);
 	const [highlightedTabs, setHighlightedTabs] = useState<ChromeTab[]>([]);
 
-	// Function to fetch and update highlighted tabs
-	const fetchHighlightedTabs = async () => {
+	// One ref per component instance. Marked unmounted in the cleanup
+	// of the mount effect; the async fetch guards on it before any
+	// setState.
+	const mountedRef = useMemo(() => createMountedRef(), []);
+
+	useEffect(() => {
+		mountedRef.markMounted();
+		return () => {
+			mountedRef.markUnmounted();
+		};
+	}, [mountedRef]);
+
+	// Function to fetch and update highlighted tabs. Guarded by
+	// `mountedRef` so a late-resolving fetch after unmount is a
+	// safe no-op.
+	const fetchHighlightedTabs = useCallback(async () => {
 		const tabs = await getHighlightedTabs();
+		if (!mountedRef.isMounted()) return;
 		setHighlightedTabs(tabs);
 		setHighlightedCount(tabs.length);
-	};
+	}, [mountedRef]);
 
 	// Initial load
 	useEffect(() => {
 		fetchHighlightedTabs();
-	}, []);
+	}, [fetchHighlightedTabs]);
 
 	// Listen for highlighted tab changes in Chrome
 	useEffect(() => {
@@ -29,7 +56,7 @@ export function useHighlightedTabs() {
 		return () => {
 			chrome.tabs.onHighlighted.removeListener(handleHighlightedChange);
 		};
-	}, []);
+	}, [fetchHighlightedTabs]);
 
 	return {
 		highlightedCount,
