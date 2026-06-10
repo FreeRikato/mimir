@@ -16,6 +16,24 @@
  * a hard timeout. On timeout we reject with `ScriptingTimeoutError` so the
  * caller can record a `TIMEOUT` extraction error and the worker chain can
  * continue with the next tab.
+ *
+ * MEM-3 — known limitation (not fixable in this wrapper):
+ *   The `Promise.race` below stops the *caller* from waiting, but the
+ *   underlying `chrome.scripting.executeScript` call is still in flight
+ *   inside Chrome's renderer. It will eventually settle, and the SW queue
+ *   still holds the entry. Cancelling 20 extractions in quick succession
+ *   leaves up to 20 dangling `executeScript` calls in the SW.
+ *
+ *   There is no public Chrome API to cancel a pending `executeScript`. The
+ *   strongest available kill switch is `chrome.tabs.discard(tabId)` from a
+ *   different MV3 surface (the side panel), which forces the renderer to
+ *   tear down and unblocks the SW queue at the cost of reloading the tab
+ *   if the user navigates back to it. `extractTabsConcurrent` does not
+ *   currently call `discard` because the cost (losing in-page state) is
+ *   almost always higher than the benefit (clearing a stuck request). If a
+ *   future change ever needs a kill switch, plumb the `tabId` through
+ *   `cancellableExecuteScript's` `injection.target` and call
+ *   `chrome.tabs.discard` from the side panel on `AbortError`.
  */
 
 export class ScriptingTimeoutError extends Error {
