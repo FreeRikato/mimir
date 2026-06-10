@@ -1,5 +1,5 @@
 import { Clipboard, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { DomainGroup } from "./components/DomainGroup";
 import { ExtractionErrorAlert } from "./components/ExtractionErrorAlert";
@@ -14,6 +14,7 @@ import { useHistory } from "./hooks/useHistory";
 import { useSelection } from "./hooks/useSelection";
 import { useTabs } from "./hooks/useTabs";
 import type {
+	DomainGroup as DomainGroupType,
 	ExportFormat,
 	ExtractedData,
 	ExtractionErrorInfo,
@@ -23,18 +24,21 @@ import type {
 	SubtitleExtractionFormat,
 } from "./types";
 import { SubtitleError } from "./types";
+import { createAbortControllerRegistry } from "./utils/abortControllerRegistry";
 import { getCachedContent, setCachedContent } from "./utils/cache";
 import { cancellableExecuteScript, ScriptingTimeoutError } from "./utils/cancellableScripting";
 import { createClipboardFallback } from "./utils/clipboardFallback";
 import { createDebouncer } from "./utils/debounce";
 import { downloadAsFile, formatExport, getMimeType } from "./utils/exporters";
 import { createExtractionError } from "./utils/extractionError";
+import { createExtractSingleFlight } from "./utils/extractSingleFlight";
 import { detectPdfCandidate } from "./utils/pdf";
 import { extractPdfContent } from "./utils/pdfExtraction";
 import { extractTextFromBuffer, extractTextFromFile } from "./utils/pdfExtractor";
 import { createLoadedGuard } from "./utils/persistedSetting";
 import { fetchRedditPost, isRedditPostUrl } from "./utils/reddit";
 import { getPageHTML } from "./utils/scripting";
+import { createSelectionGuard, type SelectionSnapshot } from "./utils/selectionGuard";
 import {
 	getSubtitleFormatSetting,
 	getSubtitleLanguageSetting,
@@ -42,7 +46,7 @@ import {
 	setSubtitleFormatSetting,
 	setSubtitleLanguageSetting,
 } from "./utils/settings";
-import { createSingleFlight } from "./utils/singleFlight";
+import { createStatusResetter } from "./utils/statusResetter";
 import { clearHealthCheckCache, fetchYoutubeSubtitles } from "./utils/subtitles";
 import { closeTabsSafely, getTabsToRight } from "./utils/tabHelpers";
 import { formatXThread, isXTweetUrl, parseXTweetId, readXDataFromPage } from "./utils/xTwitter";
@@ -688,14 +692,38 @@ async function extractTabsConcurrent(
 export function SidePanelApp() {
 	const { groups, isLoading, error, refresh } = useTabs();
 	const {
+		selectedTabIds,
 		selectedCount,
 		getSelectedIdsAsArray,
 		isTabSelected,
 		getDomainSelectionState,
-		toggleTab,
-		toggleDomain,
-		clearSelection,
+		toggleTab: rawToggleTab,
+		toggleDomain: rawToggleDomain,
+		clearSelection: rawClearSelection,
 	} = useSelection();
+
+	// RC-3: wrap the toggle handlers so any user mutation invalidates
+	// the in-flight selection snapshot captured at extraction start.
+	// The raw handlers are also called so the underlying set still
+	// fires; we just bump the guard's seq in the same tick.
+	const toggleTab = useCallback(
+		(id: number) => {
+			selectionGuardRef.current.markMutated();
+			rawToggleTab(id);
+		},
+		[rawToggleTab],
+	);
+	const toggleDomain = useCallback(
+		(group: DomainGroupType) => {
+			selectionGuardRef.current.markMutated();
+			rawToggleDomain(group);
+		},
+		[rawToggleDomain],
+	);
+	const clearSelection = useCallback(() => {
+		selectionGuardRef.current.markMutated();
+		rawClearSelection();
+	}, [rawClearSelection]);
 	const { highlightedCount, highlightedTabs } = useHighlightedTabs();
 	const history = useHistory();
 	const { closeTabsEnabled, toggleCloseTabs } = useCloseTabsSetting();
@@ -726,11 +754,36 @@ export function SidePanelApp() {
 
 	// Progress tracking state
 	const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
-	const [abortController, setAbortController] = useState<AbortController | null>(null);
-	const [toRightAbortController, setToRightAbortController] = useState<AbortController | null>(null);
 	const [toRightExtractionProgress, setToRightExtractionProgress] = useState<ExtractionProgress | null>(null);
-	const [highlightedAbortController, setHighlightedAbortController] = useState<AbortController | null>(null);
 	const [highlightedExtractionProgress, setHighlightedExtractionProgress] = useState<ExtractionProgress | null>(null);
+
+	// RC-7: single in-flight AbortController for all three extraction
+	// handlers. Replaces the three `useState<AbortController | null>`
+	// slots that used to allow a cancel to miss the right run. State
+	// mirrors `registry.current()` so the cancel button can render.
+	const abortRegistryRef = useRef(createAbortControllerRegistry());
+
+	// RC-1: shared single-flight guard for the three handlers. Both the
+	// Footer buttons and the keyboard listener funnel through this so
+	// the busy state is identical regardless of which surface the user
+	// used.
+	const extractSingleFlight = useMemo(() => createExtractSingleFlight(), []);
+
+	// RC-2: monotonic seq for the "success -> idle" status reset. The
+	// setTimeout closure captures the seq and only acts if it's still
+	// the latest, so a 2s timer from run A cannot clobber run B's
+	// "extracting" status.
+	const handleExtractResetter = useMemo(() => createStatusResetter(), []);
+	const toRightResetter = useMemo(() => createStatusResetter(), []);
+	const highlightedResetter = useMemo(() => createStatusResetter(), []);
+
+	// RC-3: selection-clearing guard. The wiring in handleExtract*
+	// captures the current selection set on each "Extract" click;
+	// on closeTabs success, it only clears if the snapshot is still
+	// authoritative. `markMutated` is called by the selection
+	// toggles.
+	const selectionGuardRef = useRef(createSelectionGuard());
+	const extractSelectionSnapshotRef = useRef<SelectionSnapshot | null>(null);
 
 	// Track mount state to prevent state updates on unmounted component
 	const isMountedRef = useRef(true);
@@ -926,9 +979,22 @@ export function SidePanelApp() {
 		if (selectedIds.length === 0) return;
 		resetClipboardFallbackState();
 
-		// Create abort controller for this extraction
-		const controller = new AbortController();
-		setAbortController(controller);
+		// RC-7: one in-flight AbortController. begin() aborts the
+		// previous one (a stale run from a prior mode), so cancel
+		// always kills the latest run.
+		const controller = abortRegistryRef.current.begin();
+
+		// RC-2: schedule a fresh idle transition seq. The setTimeout
+		// closure below will only act if this seq is still the latest
+		// when it fires, so a 2s timer from a previous run cannot
+		// clobber the "extracting" status of a newer run.
+		handleExtractResetter.cancel();
+		const idleSeq = handleExtractResetter.schedule(2000);
+
+		// RC-3: capture the current selection at extraction start.
+		// On closeTabs success, only `clearSelection()` if the
+		// snapshot is still authoritative (no user toggle since).
+		extractSelectionSnapshotRef.current = selectionGuardRef.current.captureSnapshot(selectedTabIds);
 
 		setIsExtracting(true);
 		setExtractionStatus("extracting");
@@ -982,7 +1048,11 @@ export function SidePanelApp() {
 					// Close tabs if setting is enabled
 					if (closeTabsEnabled) {
 						const { closed } = await closeTabsSafely(allExtractedTabIds);
-						if (closed > 0) {
+						// RC-3: only clear if the snapshot is still
+						// authoritative AND the closed tabs include
+						// at least one from the user's selection.
+						const snap = extractSelectionSnapshotRef.current;
+						if (closed > 0 && snap && selectionGuardRef.current.shouldClear(snap, allExtractedTabIds, selectedTabIds)) {
 							clearSelection();
 						}
 					}
@@ -990,6 +1060,7 @@ export function SidePanelApp() {
 			}
 
 			if (cancelled) {
+				handleExtractResetter.cancel();
 				setExtractionStatus("idle");
 				if (clipboardOutcome === "copied" && validResults.length > 0) {
 					toast.success(
@@ -1000,9 +1071,11 @@ export function SidePanelApp() {
 					);
 				}
 			} else if (errors.length > 0 && validResults.length === 0) {
+				handleExtractResetter.cancel();
 				setExtractionStatus("error");
 				toast.error(`Extraction failed for all ${selectedIds.length} tab${selectedIds.length > 1 ? "s" : ""}`);
 			} else if (errors.length > 0) {
+				handleExtractResetter.cancel();
 				setExtractionStatus("partial");
 				toast(`Extracted ${validResults.length} tab${validResults.length > 1 ? "s" : ""}, ${errors.length} failed`, {
 					icon: "⚠️",
@@ -1015,22 +1088,24 @@ export function SidePanelApp() {
 					);
 				}
 				setTimeout(() => {
-					if (isMountedRef.current) {
+					if (isMountedRef.current && handleExtractResetter.isLatest(idleSeq.seq)) {
 						setExtractionStatus("idle");
 					}
 				}, 2000);
 			}
 		} catch (err) {
 			console.error("Extraction failed:", err);
+			handleExtractResetter.cancel();
 			setExtractionStatus("error");
 			toast.error("Content extraction failed. Please try again.");
 		} finally {
 			setIsExtracting(false);
 			setExtractionProgress(null);
-			setAbortController(null);
+			abortRegistryRef.current.clear();
 		}
 	}, [
 		getSelectedIdsAsArray,
+		selectedTabIds,
 		resetClipboardFallbackState,
 		subtitleFormat,
 		copyExtractedResultsToClipboard,
@@ -1038,22 +1113,27 @@ export function SidePanelApp() {
 		closeTabsEnabled,
 		clearSelection,
 		checkAndPromptPdfUpload,
+		handleExtractResetter,
 	]);
 
+	// RC-7: cancel reads the current controller from the registry so
+	// it always kills the latest in-flight run, regardless of which
+	// handler started it. Progress-state mutation is per-handler so
+	// the right progress card flips to "cancelled".
 	const handleCancelExtraction = useCallback(() => {
-		abortController?.abort();
+		abortRegistryRef.current.abort();
 		setExtractionProgress((prev) => (prev ? { ...prev, isCancelled: true } : null));
-	}, [abortController]);
+	}, []);
 
 	const handleCancelToRightExtraction = useCallback(() => {
-		toRightAbortController?.abort();
+		abortRegistryRef.current.abort();
 		setToRightExtractionProgress((prev) => (prev ? { ...prev, isCancelled: true } : null));
-	}, [toRightAbortController]);
+	}, []);
 
 	const handleCancelHighlightedExtraction = useCallback(() => {
-		highlightedAbortController?.abort();
+		abortRegistryRef.current.abort();
 		setHighlightedExtractionProgress((prev) => (prev ? { ...prev, isCancelled: true } : null));
-	}, [highlightedAbortController]);
+	}, []);
 
 	const handleExtractToRight = useCallback(async () => {
 		const tabsToRight = await getTabsToRight();
@@ -1062,9 +1142,14 @@ export function SidePanelApp() {
 		if (tabIds.length === 0) return;
 		resetClipboardFallbackState();
 
-		// Create abort controller for this extraction
-		const controller = new AbortController();
-		setToRightAbortController(controller);
+		// RC-7: single registry. begin() aborts any prior in-flight
+		// controller, so the cancel button always targets the
+		// newest run.
+		const controller = abortRegistryRef.current.begin();
+
+		// RC-2: invalidate the previous run's idle-transition seq.
+		toRightResetter.cancel();
+		const idleSeq = toRightResetter.schedule(2000);
 
 		setIsExtractingToRight(true);
 		setToRightExtractionStatus("extracting");
@@ -1118,7 +1203,15 @@ export function SidePanelApp() {
 					// Close tabs if setting is enabled
 					if (closeTabsEnabled) {
 						const { closed } = await closeTabsSafely(allExtractedTabIds);
-						if (closed > 0) {
+						// RC-3: handleExtractToRight's inputs are NOT
+						// the user's footer selection - they're
+						// whatever tabs sit to the right of the
+						// active one. Clearing the footer selection
+						// here was racy and conceptually wrong; we
+						// only call it if the closed tabs happen to
+						// overlap a still-valid footer snapshot.
+						const snap = extractSelectionSnapshotRef.current;
+						if (closed > 0 && snap && selectionGuardRef.current.shouldClear(snap, allExtractedTabIds, selectedTabIds)) {
 							clearSelection();
 						}
 					}
@@ -1126,6 +1219,7 @@ export function SidePanelApp() {
 			}
 
 			if (cancelled) {
+				toRightResetter.cancel();
 				setToRightExtractionStatus("idle");
 				if (clipboardOutcome === "copied" && validResults.length > 0) {
 					toast.success(
@@ -1136,9 +1230,11 @@ export function SidePanelApp() {
 					);
 				}
 			} else if (errors.length > 0 && validResults.length === 0) {
+				toRightResetter.cancel();
 				setToRightExtractionStatus("error");
 				toast.error(`Extraction failed for all ${tabIds.length} tab${tabIds.length > 1 ? "s" : ""}`);
 			} else if (errors.length > 0) {
+				toRightResetter.cancel();
 				setToRightExtractionStatus("partial");
 				toast(`Extracted ${validResults.length} tab${validResults.length > 1 ? "s" : ""}, ${errors.length} failed`, {
 					icon: "⚠️",
@@ -1151,19 +1247,20 @@ export function SidePanelApp() {
 					);
 				}
 				setTimeout(() => {
-					if (isMountedRef.current) {
+					if (isMountedRef.current && toRightResetter.isLatest(idleSeq.seq)) {
 						setToRightExtractionStatus("idle");
 					}
 				}, 2000);
 			}
 		} catch (err) {
 			console.error("Extraction failed:", err);
+			toRightResetter.cancel();
 			setToRightExtractionStatus("error");
 			toast.error("Content extraction failed. Please try again.");
 		} finally {
 			setIsExtractingToRight(false);
 			setToRightExtractionProgress(null);
-			setToRightAbortController(null);
+			abortRegistryRef.current.clear();
 		}
 	}, [
 		resetClipboardFallbackState,
@@ -1173,6 +1270,8 @@ export function SidePanelApp() {
 		closeTabsEnabled,
 		clearSelection,
 		checkAndPromptPdfUpload,
+		selectedTabIds,
+		toRightResetter,
 	]);
 
 	const handleExtractHighlighted = useCallback(async () => {
@@ -1181,9 +1280,13 @@ export function SidePanelApp() {
 		if (tabIds.length === 0) return;
 		resetClipboardFallbackState();
 
-		// Create abort controller for this extraction
-		const controller = new AbortController();
-		setHighlightedAbortController(controller);
+		// RC-7: single registry; begin() aborts any previous
+		// in-flight run before installing this one.
+		const controller = abortRegistryRef.current.begin();
+
+		// RC-2: invalidate the previous run's idle-transition seq.
+		highlightedResetter.cancel();
+		const idleSeq = highlightedResetter.schedule(2000);
 
 		setIsExtractingHighlighted(true);
 		setHighlightedExtractionStatus("extracting");
@@ -1237,7 +1340,15 @@ export function SidePanelApp() {
 					// Close tabs if setting is enabled
 					if (closeTabsEnabled) {
 						const { closed } = await closeTabsSafely(allExtractedTabIds);
-						if (closed > 0) {
+						// RC-3: handleExtractHighlighted's inputs are
+						// the Chrome-highlighted tabs, not the
+						// user's footer selection. Clearing the
+						// footer selection was racy and
+						// conceptually wrong; only do it if the
+						// closed tabs overlap a still-valid footer
+						// snapshot.
+						const snap = extractSelectionSnapshotRef.current;
+						if (closed > 0 && snap && selectionGuardRef.current.shouldClear(snap, allExtractedTabIds, selectedTabIds)) {
 							clearSelection();
 						}
 					}
@@ -1245,6 +1356,7 @@ export function SidePanelApp() {
 			}
 
 			if (cancelled) {
+				highlightedResetter.cancel();
 				setHighlightedExtractionStatus("idle");
 				if (clipboardOutcome === "copied" && validResults.length > 0) {
 					toast.success(
@@ -1255,9 +1367,11 @@ export function SidePanelApp() {
 					);
 				}
 			} else if (errors.length > 0 && validResults.length === 0) {
+				highlightedResetter.cancel();
 				setHighlightedExtractionStatus("error");
 				toast.error(`Extraction failed for all ${tabIds.length} tab${tabIds.length > 1 ? "s" : ""}`);
 			} else if (errors.length > 0) {
+				highlightedResetter.cancel();
 				setHighlightedExtractionStatus("partial");
 				toast(`Extracted ${validResults.length} tab${validResults.length > 1 ? "s" : ""}, ${errors.length} failed`, {
 					icon: "⚠️",
@@ -1270,19 +1384,20 @@ export function SidePanelApp() {
 					);
 				}
 				setTimeout(() => {
-					if (isMountedRef.current) {
+					if (isMountedRef.current && highlightedResetter.isLatest(idleSeq.seq)) {
 						setHighlightedExtractionStatus("idle");
 					}
 				}, 2000);
 			}
 		} catch (err) {
 			console.error("Extraction failed:", err);
+			highlightedResetter.cancel();
 			setHighlightedExtractionStatus("error");
 			toast.error("Content extraction failed. Please try again.");
 		} finally {
 			setIsExtractingHighlighted(false);
 			setHighlightedExtractionProgress(null);
-			setHighlightedAbortController(null);
+			abortRegistryRef.current.clear();
 		}
 	}, [
 		highlightedTabs,
@@ -1293,6 +1408,8 @@ export function SidePanelApp() {
 		closeTabsEnabled,
 		clearSelection,
 		checkAndPromptPdfUpload,
+		selectedTabIds,
+		highlightedResetter,
 	]);
 
 	// Export & History handlers
@@ -1412,45 +1529,38 @@ export function SidePanelApp() {
 		[pdfUploadRequest, copyExtractedResultsToClipboard, history],
 	);
 
-	// Effect to handle keyboard shortcut commands from background
+	// Effect to handle keyboard shortcut commands from background.
+	// RC-1: the keyboard listener and the Footer buttons funnel
+	// through the same single-flight guard. A click racing with a
+	// keyboard tap (or two rapid clicks) no longer launches two
+	// extractions in parallel.
 	useEffect(() => {
-		// Bug 1.23: a double-tapped keyboard shortcut used to start two
-		// extractions in parallel. The first to set AbortController won; the
-		// second silently overwrote the controller, leaving the first
-		// extraction uncancellable. The single-flight guard drops the second
-		// trigger while an extraction is in flight.
-		const guard = createSingleFlight();
 		const handleMessage = (message: { type: string; command: string }) => {
 			if (message.type !== "KEYBOARD_COMMAND") return;
-			if (!guard.tryStart()) {
-				toast("Extraction already in progress", { icon: "⏳", id: "extraction-busy" });
-				return;
-			}
 			const run = async () => {
-				try {
-					switch (message.command) {
-						case "extract-to-right":
-							await handleExtractToRight();
-							break;
-						case "extract-selected":
-							await handleExtract();
-							break;
-						case "extract-highlighted":
-							await handleExtractHighlighted();
-							break;
-					}
-				} finally {
-					guard.finish();
+				switch (message.command) {
+					case "extract-to-right":
+						await handleExtractToRight();
+						break;
+					case "extract-selected":
+						await handleExtract();
+						break;
+					case "extract-highlighted":
+						await handleExtractHighlighted();
+						break;
 				}
 			};
-			void run();
+			const result = extractSingleFlight.tryRun(run);
+			if (!result.ok) {
+				toast("Extraction already in progress", { icon: "⏳", id: "extraction-busy" });
+			}
 		};
 
 		chrome.runtime.onMessage.addListener(handleMessage);
 		return () => {
 			chrome.runtime.onMessage.removeListener(handleMessage);
 		};
-	}, [handleExtractToRight, handleExtract, handleExtractHighlighted]);
+	}, [handleExtractToRight, handleExtract, handleExtractHighlighted, extractSingleFlight]);
 
 	return (
 		<div className="h-screen w-full flex flex-col text-glass-primary">
@@ -1559,23 +1669,35 @@ export function SidePanelApp() {
 				)}
 			</main>
 
-			{/* Footer */}
+			{/* Footer. RC-1: the three extraction handlers are wrapped
+			through the shared single-flight guard so a click that
+			races with the keyboard shortcut (or two rapid clicks)
+			cannot launch two extractions in parallel. */}
 			<Footer
 				selectedCount={selectedCount}
 				isExtracting={isExtracting}
 				isRefreshing={isRefreshing}
 				extractionStatus={extractionStatus}
 				extractionErrors={extractionErrors}
-				onExtract={handleExtract}
+				onExtract={() => {
+					const r = extractSingleFlight.tryRun(() => handleExtract());
+					if (!r.ok) toast("Extraction already in progress", { icon: "⏳", id: "extraction-busy" });
+				}}
 				onRefresh={handleRefresh}
 				onCancel={clearSelection}
 				tabsToRightCount={tabsToRightCount}
-				onExtractToRight={handleExtractToRight}
+				onExtractToRight={() => {
+					const r = extractSingleFlight.tryRun(() => handleExtractToRight());
+					if (!r.ok) toast("Extraction already in progress", { icon: "⏳", id: "extraction-busy" });
+				}}
 				isExtractingToRight={isExtractingToRight}
 				toRightExtractionStatus={toRightExtractionStatus}
 				toRightExtractionErrors={toRightExtractionErrors}
 				highlightedCount={highlightedCount}
-				onExtractHighlighted={handleExtractHighlighted}
+				onExtractHighlighted={() => {
+					const r = extractSingleFlight.tryRun(() => handleExtractHighlighted());
+					if (!r.ok) toast("Extraction already in progress", { icon: "⏳", id: "extraction-busy" });
+				}}
 				isExtractingHighlighted={isExtractingHighlighted}
 				highlightedExtractionStatus={highlightedExtractionStatus}
 				highlightedExtractionErrors={highlightedExtractionErrors}
