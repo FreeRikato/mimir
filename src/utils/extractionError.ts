@@ -28,7 +28,13 @@ import { SubtitleError, type SubtitleErrorCode } from "../types";
  *   (bug-report hint). Each maps to a distinct user-facing message and code.
  */
 
-export type ExtractionErrorCause = "default" | "scripting" | "youtube-empty" | "x-not-captured" | "x-schema-drift";
+export type ExtractionErrorCause =
+	| "default"
+	| "scripting"
+	| "scripting-timeout"
+	| "youtube-empty"
+	| "x-not-captured"
+	| "x-schema-drift";
 
 export interface TabLike {
 	id?: number;
@@ -88,6 +94,16 @@ function isNetworkShapedError(err: Error): boolean {
 
 export function createExtractionError(input: CreateExtractionErrorInput): ExtractionErrorInfo {
 	const { tabId, tab, err, cause = "default" } = input;
+
+	if (cause === "scripting-timeout") {
+		return {
+			tabId,
+			url: tab?.url || "unknown",
+			title: tab?.title || "Unknown",
+			errorCode: "TIMEOUT",
+			userMessage: "Extraction timed out. The page may be suspended or still loading. Try again in a moment.",
+		};
+	}
 
 	if (cause === "scripting") {
 		const reason = describeScriptingError(err);

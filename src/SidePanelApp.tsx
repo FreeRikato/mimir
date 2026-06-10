@@ -24,6 +24,7 @@ import type {
 } from "./types";
 import { SubtitleError } from "./types";
 import { getCachedContent, setCachedContent } from "./utils/cache";
+import { cancellableExecuteScript, ScriptingTimeoutError } from "./utils/cancellableScripting";
 import { createClipboardFallback } from "./utils/clipboardFallback";
 import { createDebouncer } from "./utils/debounce";
 import { downloadAsFile, formatExport, getMimeType } from "./utils/exporters";
@@ -54,6 +55,17 @@ type ClipboardWriteOutcome = "copied" | "requires_manual_copy" | "failed";
 // separate React state `pendingClipboardContent` that were set and cleared
 // in different code paths, allowing them to desync (see bug 1.7).
 const clipboardFallback = createClipboardFallback<string>();
+
+/**
+ * Per-tab ceiling for `chrome.scripting.executeScript` calls. Hoisted to
+ * module scope so both `extractTab` (which now uses
+ * `cancellableExecuteScript`) and `extractTabsConcurrent` (which builds the
+ * combined AbortSignal) share one source of truth.
+ */
+const NON_YOUTUBE_TAB_TIMEOUT = 15000; // 15 seconds for non-YouTube content
+const PDF_TAB_TIMEOUT = 60000; // 60 seconds for PDF extraction pipeline
+const REDDIT_TAB_TIMEOUT = 45000; // 45 seconds for Reddit API + morechildren calls
+const X_TAB_TIMEOUT = 15000; // 15 seconds — just an executeScript read, should be instant
 
 /**
  * Safely writes text to clipboard with focus check and user-friendly UX.
@@ -205,12 +217,15 @@ async function extractTab(
 				const tweetId = parseXTweetId(tabUrl);
 				if (!tweetId) throw new SubtitleError("Could not parse tweet ID from URL", "INVALID_URL", undefined, tabUrl);
 
-				const injection = await chrome.scripting.executeScript({
-					target: { tabId: id },
-					world: "MAIN",
-					func: readXDataFromPage,
-					args: [tweetId],
-				});
+				const injection = await cancellableExecuteScript(
+					{
+						target: { tabId: id },
+						world: "MAIN",
+						func: readXDataFromPage,
+						args: [tweetId],
+					},
+					{ timeoutMs: X_TAB_TIMEOUT, signal },
+				);
 
 				const rawData = injection[0]?.result ?? null;
 				if (!rawData) {
@@ -372,12 +387,22 @@ async function extractTab(
 
 		let injection: chrome.scripting.InjectionResult[] = [];
 		try {
-			injection = await chrome.scripting.executeScript({
-				target: { tabId: id },
-				func: getPageHTML,
-			});
+			injection = await cancellableExecuteScript(
+				{ target: { tabId: id }, func: getPageHTML },
+				{ timeoutMs: NON_YOUTUBE_TAB_TIMEOUT, signal },
+			);
 		} catch (scriptingErr) {
 			if (signal?.aborted) return { result: null, error: null };
+			// Bug: a hung renderer on a not-yet-loaded / connection-refused tab
+			// used to block the worker chain forever because MV3 executeScript
+			// has no native abort support. The cancellableExecuteScript wrapper
+			// races the call against a hard timeout; surface a clean TIMEOUT
+			// error so the worker can skip past the dead tab.
+			if (scriptingErr instanceof ScriptingTimeoutError) {
+				const errorInfo = createExtractionError({ tabId: id, tab, err: scriptingErr, cause: "scripting-timeout" });
+				console.warn(`Tab ${id}: chrome.scripting.executeScript timed out:`, scriptingErr);
+				return { result: null, error: errorInfo };
+			}
 			// Bug 1.6: surface a real error to the user instead of silently
 			// returning null. The cause discriminator lets the helper pick a
 			// specific user message ("tab suspended", "permission denied",
@@ -451,10 +476,6 @@ async function extractTabsConcurrent(
 	allExtractedTabIds: number[];
 }> {
 	const CONCURRENCY_LIMIT = 3;
-	const NON_YOUTUBE_TAB_TIMEOUT = 15000; // 15 seconds for non-YouTube content
-	const PDF_TAB_TIMEOUT = 60000; // 60 seconds for PDF extraction pipeline
-	const REDDIT_TAB_TIMEOUT = 45000; // 45 seconds for Reddit API + morechildren calls
-	const X_TAB_TIMEOUT = 15000; // 15 seconds — just an executeScript read, should be instant
 
 	// Dedupe tabs by URL: extract each unique URL once. The original tab IDs
 	// that shared a URL are tracked so callers can still close every duplicate.
