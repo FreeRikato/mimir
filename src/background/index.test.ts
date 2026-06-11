@@ -103,3 +103,84 @@ describe("background message listener", () => {
 		consoleLog.mockRestore();
 	});
 });
+
+// ERR-6: top-level error handlers in the service worker prevent MV3
+// from keeping the worker offline for several minutes after a single
+// unhandled promise rejection. The handlers themselves live in the
+// production code; this test pins the contract by reading the source
+// and asserting the listener registration is present.
+describe("ERR-6: service worker error handlers", () => {
+	it("registers top-level error and unhandledrejection listeners", async () => {
+		const source = await import("node:fs").then((fs) => fs.promises.readFile("src/background/index.ts", "utf-8"));
+		expect(source).toMatch(/self\.addEventListener\(\s*"error"/);
+		expect(source).toMatch(/self\.addEventListener\(\s*"unhandledrejection"/);
+	});
+});
+
+// COR-13: best-effort cancel signal. The SW records the cancellation
+// timestamp and (when `discardTab` is set) tears down the tab to
+// break the SW queue. The MV3 executeScript is still un-cancellable
+// (see MEM-3); the test pins the wire so a future Chrome API can
+// replace the no-op with a real cancel.
+describe("background CANCEL_EXTRACTION handler (COR-13)", () => {
+	it("returns true so the channel stays open for sendResponse", async () => {
+		const sentMessages: Array<{ type: string; tabId?: number; discardTab?: boolean }> = [];
+		const discarded: number[] = [];
+		(globalThis as unknown as { chrome: unknown }).chrome = {
+			runtime: {
+				onMessage: {
+					addListener: (cb: MessageCallback) => {
+						registeredCallback = cb;
+					},
+				},
+				onInstalled: { addListener: vi.fn() },
+				sendMessage: vi.fn(async (msg) => {
+					sentMessages.push(msg);
+				}),
+				lastError: undefined,
+			},
+			sidePanel: { setPanelBehavior: vi.fn() },
+			commands: { onCommand: { addListener: vi.fn() } },
+			tabs: {
+				onRemoved: { addListener: vi.fn() },
+				discard: vi.fn(async (id: number) => {
+					discarded.push(id);
+				}),
+			},
+		};
+		vi.resetModules();
+		await import("./index");
+		const sendResponse = vi.fn();
+		const result = registeredCallback!({ type: "CANCEL_EXTRACTION", tabId: 42 }, {}, sendResponse);
+		expect(result).toBe(true);
+		expect(sendResponse).toHaveBeenCalledWith({ success: true, tabId: 42 });
+		expect(discarded).toEqual([]); // discardTab not set
+	});
+
+	it("calls chrome.tabs.discard when discardTab is true", async () => {
+		const discarded: number[] = [];
+		(globalThis as unknown as { chrome: unknown }).chrome = {
+			runtime: {
+				onMessage: { addListener: (cb: MessageCallback) => (registeredCallback = cb) },
+				onInstalled: { addListener: vi.fn() },
+				sendMessage: vi.fn(),
+				lastError: undefined,
+			},
+			sidePanel: { setPanelBehavior: vi.fn() },
+			commands: { onCommand: { addListener: vi.fn() } },
+			tabs: {
+				onRemoved: { addListener: vi.fn() },
+				discard: vi.fn(async (id: number) => {
+					discarded.push(id);
+				}),
+			},
+		};
+		vi.resetModules();
+		await import("./index");
+		const sendResponse = vi.fn();
+		registeredCallback!({ type: "CANCEL_EXTRACTION", tabId: 99, discardTab: true }, {}, sendResponse);
+		// wait a microtask for the discard promise
+		await new Promise((r) => setTimeout(r, 0));
+		expect(discarded).toEqual([99]);
+	});
+});

@@ -1,5 +1,12 @@
 console.log("Tab HTML Extractor background service worker loaded");
 
+// COR-13: in-memory record of cancel intents from the side panel. Cleared
+// on tab close (chrome.tabs.onRemoved).
+const pendingCancellations = new Map<number, number>();
+chrome.tabs?.onRemoved?.addListener((tabId) => {
+	pendingCancellations.delete(tabId);
+});
+
 // Open side panel when extension icon is clicked
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -293,6 +300,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 				});
 			});
 
+		return true;
+	}
+
+	// COR-13: best-effort cancel signal from the side panel. The MV3
+	// chrome.scripting.executeScript call itself is un-cancellable; this
+	// handler records the intent and (when the caller supplies
+	// `discardTab: true`) tears down the tab to break the SW queue at
+	// the cost of reloading the tab on next focus. Side panel should
+	// send `{ type: "CANCEL_EXTRACTION", tabId, discardTab? }`.
+	if (message.type === "CANCEL_EXTRACTION") {
+		const tabId = typeof message.tabId === "number" ? message.tabId : undefined;
+		if (tabId !== undefined) {
+			pendingCancellations.set(tabId, Date.now());
+			if (message.discardTab) {
+				chrome.tabs.discard(tabId).catch((err) => {
+					console.warn(`[mimir-sw] chrome.tabs.discard failed for ${tabId}:`, err);
+				});
+			}
+		}
+		sendResponse({ success: true, tabId });
 		return true;
 	}
 

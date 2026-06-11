@@ -1116,6 +1116,19 @@ export function SidePanelApp() {
 		handleExtractResetter,
 	]);
 
+	// COR-13: helper that sends CANCEL_EXTRACTION to the SW for every
+	// in-flight tab. The SW is a no-op (the MV3 executeScript is not
+	// cancellable; see MEM-3 in src/utils/cancellableScripting.ts),
+	// but having the wire in place means a future Chrome API can be
+	// hooked without changing the side panel.
+	const notifySwOfCancel = useCallback((tabIds: number[], discard: boolean) => {
+		for (const id of tabIds) {
+			chrome.runtime.sendMessage({ type: "CANCEL_EXTRACTION", tabId: id, discardTab: discard }).catch(() => {
+				// ignore — SW may be down
+			});
+		}
+	}, []);
+
 	// RC-7: cancel reads the current controller from the registry so
 	// it always kills the latest in-flight run, regardless of which
 	// handler started it. Progress-state mutation is per-handler so
@@ -1123,17 +1136,28 @@ export function SidePanelApp() {
 	const handleCancelExtraction = useCallback(() => {
 		abortRegistryRef.current.abort();
 		setExtractionProgress((prev) => (prev ? { ...prev, isCancelled: true } : null));
-	}, []);
+		const ids = getSelectedIdsAsArray();
+		if (ids.length > 0) notifySwOfCancel(ids, false);
+	}, [getSelectedIdsAsArray, notifySwOfCancel]);
 
-	const handleCancelToRightExtraction = useCallback(() => {
+	const handleCancelToRightExtraction = useCallback(async () => {
 		abortRegistryRef.current.abort();
 		setToRightExtractionProgress((prev) => (prev ? { ...prev, isCancelled: true } : null));
-	}, []);
+		const tabs = await getTabsToRight();
+		notifySwOfCancel(
+			tabs.map((t) => t.id),
+			false,
+		);
+	}, [notifySwOfCancel]);
 
 	const handleCancelHighlightedExtraction = useCallback(() => {
 		abortRegistryRef.current.abort();
 		setHighlightedExtractionProgress((prev) => (prev ? { ...prev, isCancelled: true } : null));
-	}, []);
+		notifySwOfCancel(
+			highlightedTabs.map((t) => t.id),
+			false,
+		);
+	}, [highlightedTabs, notifySwOfCancel]);
 
 	const handleExtractToRight = useCallback(async () => {
 		const tabsToRight = await getTabsToRight();
