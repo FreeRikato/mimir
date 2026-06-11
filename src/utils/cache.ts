@@ -11,6 +11,13 @@ const MAX_CONTENT_ENTRY_SIZE = 1.5 * 1024 * 1024; // 1.5MB per extracted tab ent
 const MAX_CACHE_SIZE = 9 * 1024 * 1024; // 9MB in bytes
 
 // Metadata key for tracking cache entries and their sizes
+// DI-2: a single metadata blob mixes the tab-group row with
+// content-cache rows. The read-modify-write cycle on this key
+// reorders the LRU on every getCachedTabs call even when no
+// content entry was touched. A future change should split into
+// `mimir_cache_metadata` and `mimir_content_metadata`. For now
+// we keep the single key for backward compatibility and document
+// the split at the eviction layer.
 const CACHE_METADATA_KEY = "mimir_cache_metadata";
 
 interface CacheEntry<T> {
