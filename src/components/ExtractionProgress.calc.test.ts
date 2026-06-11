@@ -46,13 +46,22 @@ describe("formatEta (bug 1.21: render guard)", () => {
 		expect(formatEta(-1000, 5)).toBe("");
 	});
 
-	it("formats seconds for etaMs < 60s", () => {
-		expect(formatEta(5_000, 5)).toBe("~5s remaining");
-		expect(formatEta(59_000, 5)).toBe("~59s remaining");
+	it("formats seconds for etaMs < 60s (I18N-1: uses Intl.RelativeTimeFormat)", () => {
+		// The default locale is 'en'; the runtime produces
+		// "in N seconds" / "in N minutes" via Intl.RelativeTimeFormat.
+		expect(formatEta(5_000, 5)).toBe("in 5 seconds");
+		expect(formatEta(59_000, 5)).toBe("in 59 seconds");
 	});
 
 	it("formats minutes for etaMs >= 60s", () => {
-		expect(formatEta(60_000, 5)).toBe("~1m remaining");
-		expect(formatEta(120_000, 5)).toBe("~2m remaining");
+		expect(formatEta(60_000, 5)).toBe("in 1 minute");
+		expect(formatEta(120_000, 5)).toBe("in 2 minutes");
+	});
+
+	it("respects the supplied locale (I18N-1: no hard-coded 's'/'m' suffix)", () => {
+		// Non-English locales used to see "30s" with the English
+		// suffix. With Intl.RelativeTimeFormat the suffix is produced
+		// by the runtime.
+		expect(formatEta(5_000, 5, "de")).toBe("in 5 Sekunden");
 	});
 });

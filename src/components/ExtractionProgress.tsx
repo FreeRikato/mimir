@@ -1,4 +1,5 @@
 import { AlertTriangle, CheckCircle, Loader2, X, XCircle } from "lucide-react";
+import { useState } from "react";
 import type { ExtractionProgress } from "../types";
 import { computeEtaMs, formatEta } from "./ExtractionProgress.calc";
 
@@ -11,6 +12,14 @@ export function ExtractionProgressDisplay({ progress, onCancel }: ExtractionProg
 	const { total, completed, failed, currentTabTitle, startTime, isCancelled } = progress;
 	const totalProcessed = completed + failed;
 	const percentComplete = total > 0 ? (totalProcessed / total) * 100 : 0;
+
+	// UX-1: local state that flips to true the moment the user clicks
+	// Cancel. The button then shows "Cancelling..." and is disabled, so
+	// the user knows the request is in flight (the underlying
+	// executeScript call in the SW is not actually cancellable; see
+	// MEM-3 in src/utils/cancellableScripting.ts).
+	const [cancelling, setCancelling] = useState(false);
+	const showCancelling = cancelling || isCancelled;
 
 	// Bug 1.21: ETA logic moved to ExtractionProgress.calc so it can be
 	// unit-tested. The previous inline code produced "ETA: NaN" or
@@ -72,11 +81,17 @@ export function ExtractionProgressDisplay({ progress, onCancel }: ExtractionProg
 					</span>
 				</div>
 				<button
-					onClick={onCancel}
-					className="text-glass-muted hover:text-white transition-colors"
-					title="Cancel extraction"
+					onClick={() => {
+						if (showCancelling) return;
+						setCancelling(true);
+						onCancel();
+					}}
+					disabled={showCancelling}
+					className="text-glass-muted hover:text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1"
+					title={showCancelling ? "Cancelling..." : "Cancel extraction"}
 				>
-					<X className="w-4 h-4" />
+					{showCancelling ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-4 h-4" />}
+					<span className="text-xs">{showCancelling ? "Cancelling..." : "Cancel"}</span>
 				</button>
 			</div>
 

@@ -27,11 +27,29 @@ export function computeEtaMs(input: EtaInput): number {
 const ONE_SECOND_MS = 1000;
 const ONE_MINUTE_S = 60;
 
-export function formatEta(etaMs: number, totalProcessed: number): string {
+let cachedRtf: Intl.RelativeTimeFormat | null = null;
+let cachedLocale: string | null = null;
+
+function getRtf(locale: string): Intl.RelativeTimeFormat {
+	if (cachedRtf && cachedLocale === locale) return cachedRtf;
+	cachedRtf = new Intl.RelativeTimeFormat(locale, { numeric: "always" });
+	cachedLocale = locale;
+	cachedRtf = new Intl.RelativeTimeFormat(locale, { numeric: "always" });
+	return cachedRtf;
+}
+
+// I18N-1: formatEta uses Intl.RelativeTimeFormat so the suffix ("s",
+// "m", etc.) is produced by the runtime, not hard-coded. Locale
+// defaults to 'en' to preserve the previous display; callers can
+// pass navigator.language for a localised result.
+export function formatEta(etaMs: number, totalProcessed: number, locale: string = "en"): string {
 	if (totalProcessed < 2) return "";
 	if (!Number.isFinite(etaMs) || etaMs < ONE_SECOND_MS) return "";
 	const seconds = Math.ceil(etaMs / ONE_SECOND_MS);
-	if (seconds < ONE_MINUTE_S) return `~${seconds}s remaining`;
+	const rtf = getRtf(locale);
+	if (seconds < ONE_MINUTE_S) {
+		return rtf.format(seconds, "second");
+	}
 	const minutes = Math.ceil(seconds / ONE_MINUTE_S);
-	return `~${minutes}m remaining`;
+	return rtf.format(minutes, "minute");
 }

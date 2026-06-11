@@ -811,6 +811,21 @@ export async function fetchYoutubeSubtitles(
 				}
 
 				if (!data.subtitles || !Array.isArray(data.subtitles) || data.subtitles.length === 0) {
+					// COR-6: empty subtitles + missing/zero duration is the
+					// live-stream signature. yt-dlp reports `duration: null`
+					// for live streams; the backend doesn't yet expose a
+					// typed isLiveContent flag, so a missing/zero duration
+					// is the most reliable signal. Surface a specific error
+					// so the user knows why the panel is blank instead of
+					// getting a silent no-result.
+					if (data.metadata?.duration === undefined || data.metadata?.duration === 0) {
+						throw new SubtitleError(
+							"Live streams are not supported. Mimir can only extract captions from recorded videos.",
+							"NO_SUBTITLES",
+							undefined,
+							youtubeUrl,
+						);
+					}
 					throw new SubtitleError("No subtitles found for this video", "NO_SUBTITLES", undefined, youtubeUrl);
 				}
 
