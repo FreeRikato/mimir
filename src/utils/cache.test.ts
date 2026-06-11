@@ -156,17 +156,17 @@ describe("getCachedTabs (DI-1: timestamp validation)", () => {
 			accessCount: 1,
 			lastAccess: 0,
 		};
-		session.store["mimir_cached_tabs"] = corrupted;
+		session.store.mimir_cached_tabs = corrupted;
 
 		const { getCachedTabs } = await loadModule();
 		const result = await getCachedTabs();
 		expect(result).toBeNull();
 		// The corrupted entry should be evicted.
-		expect(session.store["mimir_cached_tabs"]).toBeUndefined();
+		expect(session.store.mimir_cached_tabs).toBeUndefined();
 	});
 
 	it("rejects an entry with a negative timestamp", async () => {
-		session.store["mimir_cached_tabs"] = {
+		session.store.mimir_cached_tabs = {
 			data: [{ domain: "x", tabs: [] }],
 			timestamp: -1,
 			size: 0,
@@ -178,7 +178,7 @@ describe("getCachedTabs (DI-1: timestamp validation)", () => {
 	});
 
 	it("rejects an entry with a future timestamp (clock skew or attacker)", async () => {
-		session.store["mimir_cached_tabs"] = {
+		session.store.mimir_cached_tabs = {
 			data: [{ domain: "x", tabs: [] }],
 			timestamp: Date.now() + 60_000,
 			size: 0,
@@ -190,7 +190,7 @@ describe("getCachedTabs (DI-1: timestamp validation)", () => {
 	});
 
 	it("returns fresh entries", async () => {
-		session.store["mimir_cached_tabs"] = {
+		session.store.mimir_cached_tabs = {
 			data: [{ domain: "x", tabs: [] }],
 			timestamp: Date.now() - 1_000, // 1 second ago, well within TTL
 			size: 0,
@@ -235,7 +235,7 @@ describe("setCachedTabs (LIF-3: QuotaExceededError handling)", () => {
 		const { setCachedTabs } = await import("./cache");
 		await setCachedTabs([{ domain: "x", tabs: [] }]);
 		expect(setCalls).toBeGreaterThanOrEqual(2);
-		expect(localStorage.store["mimir_cached_tabs"]).toBeDefined();
+		expect(localStorage.store.mimir_cached_tabs).toBeDefined();
 	});
 });
 
@@ -264,6 +264,81 @@ describe("setCachedTabsDebounced (PERF-5: debounce writes)", () => {
 		setCachedTabsDebounced([{ domain: "e", tabs: [] }]);
 		await new Promise((r) => setTimeout(r, 400));
 		expect(tabSetCalls).toBe(1);
-		expect(session.store["mimir_cached_tabs"]).toBeDefined();
+		expect(session.store.mimir_cached_tabs).toBeDefined();
+	});
+});
+
+// DI-1: split the single mimir_cache_metadata key into two:
+//   - mimir_cache_metadata   (rows for the CACHE_KEY tab-group blob)
+//   - mimir_content_metadata (rows for content_<tabId> entries)
+//
+// Both setCachedTabs and setCachedContent previously wrote to the SAME
+// metadata blob. The read-modify-write cycle on that single blob
+// corrupted totalSize and reordered LRU when the two kinds interleaved.
+// The fix uses two independent metadata keys; concurrent writes of
+// different kinds can no longer trample each other.
+describe("DI-1 split: metadata store is split per kind", () => {
+	it("setCachedTabs writes only to mimir_cache_metadata, never to mimir_content_metadata", async () => {
+		const { setCachedTabs, getCacheStats } = await loadModule();
+		await setCachedTabs([{ domain: "x", tabs: [] }]);
+		expect(session.store.mimir_cache_metadata).toBeDefined();
+		expect(session.store.mimir_content_metadata).toBeUndefined();
+		const stats = await getCacheStats();
+		expect(stats.entryCount).toBe(1);
+	});
+
+	it("setCachedContent writes only to mimir_content_metadata, never to mimir_cache_metadata", async () => {
+		const { setCachedContent, getCacheStats } = await loadModule();
+		await setCachedContent(7, { text: "hi", title: "T", url: "https://x" });
+		expect(session.store.mimir_content_metadata).toBeDefined();
+		expect(session.store.mimir_cache_metadata).toBeUndefined();
+		const stats = await getCacheStats();
+		expect(stats.entryCount).toBe(1);
+	});
+
+	it("interleaved setCachedTabs + setCachedContent keep their own metadata rows", async () => {
+		const { setCachedTabs, setCachedContent, getCacheStats } = await loadModule();
+		await setCachedTabs([{ domain: "a", tabs: [] }]);
+		await setCachedContent(11, { text: "a", title: "A", url: "https://a" });
+		await setCachedContent(22, { text: "b", title: "B", url: "https://b" });
+		const stats = await getCacheStats();
+		expect(stats.entryCount).toBe(3);
+		expect(stats.totalSize).toBeGreaterThan(0);
+	});
+
+	it("a setCachedTabs call does not reset totalSize of a previously written content entry", async () => {
+		const { setCachedContent, setCachedTabs, getCacheStats } = await loadModule();
+		const payload = (id: number) => ({ text: "x".repeat(2_000), title: `t-${id}`, url: `https://x/${id}` });
+		await setCachedContent(1, payload(1));
+		const before = (await getCacheStats()).totalSize;
+		await setCachedTabs([{ domain: "a", tabs: [] }]);
+		const after = (await getCacheStats()).totalSize;
+		expect(after).toBeGreaterThan(before);
+	});
+});
+
+// DI-1 strengthening: with the old single-blob design, the test above
+// could pass by accident (the bug only manifested on concurrent writes).
+// These pin the SHAPE of the split.
+describe("DI-1 split: metadata shape is sharply separated", () => {
+	it("mimir_cache_metadata entries are an array with the tab-group key", async () => {
+		const { setCachedTabs } = await loadModule();
+		await setCachedTabs([{ domain: "x", tabs: [] }]);
+		const m = session.store.mimir_cache_metadata as { entries: Array<{ key: string }> } | undefined;
+		expect(m).toBeDefined();
+		expect(Array.isArray(m?.entries)).toBe(true);
+		// No content_<id> rows leak into the cache metadata.
+		expect(m?.entries.find((e: { key: string }) => e.key.startsWith("content_"))).toBeUndefined();
+	});
+
+	it("mimir_content_metadata entries contain only content_<id> keys", async () => {
+		const { setCachedContent } = await loadModule();
+		await setCachedContent(3, { text: "a", title: "A", url: "https://a" });
+		await setCachedContent(4, { text: "b", title: "B", url: "https://b" });
+		const m = session.store.mimir_content_metadata as { entries: Array<{ key: string }> } | undefined;
+		expect(m).toBeDefined();
+		expect(m?.entries.length).toBe(2);
+		// No mimir_cached_tabs row leaks into the content metadata.
+		expect(m?.entries.find((e: { key: string }) => e.key === "mimir_cached_tabs")).toBeUndefined();
 	});
 });
