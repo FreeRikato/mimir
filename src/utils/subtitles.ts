@@ -628,12 +628,21 @@ export function isRetryableError(error: SubtitleError): boolean {
 	return false;
 }
 
-async function fetchWithRetry<T>(
+export async function fetchWithRetry<T>(
 	fetchFn: () => Promise<T>,
 	maxAttempts = RETRY_MAX_ATTEMPTS,
 	onRetry?: (attempt: number, error: SubtitleError) => void,
 	signal?: AbortSignal,
 ): Promise<T> {
+	// ERR-1: defensive guard. If the caller passes `maxAttempts <= 0` the
+	// loop body never executes, `lastError` stays `undefined`, and the
+	// trailing `throw lastError` would surface `undefined` to the caller,
+	// breaking `err instanceof Error` narrowing and producing a confusing
+	// toast. Reject loudly here instead.
+	if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+		throw new SubtitleError("No retry attempts configured", "NETWORK_ERROR", undefined);
+	}
+
 	let lastError: SubtitleError | undefined;
 
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SubtitleError } from "../types";
 import { isRetryableError } from "./pdfExtraction";
 
@@ -51,5 +51,25 @@ describe("isRetryableError (pdfExtraction)", () => {
 			const err = new SubtitleError("bad request", "API_ERROR", undefined, "https://api.example.com", 400);
 			expect(isRetryableError(err)).toBe(false);
 		});
+	});
+});
+
+// ERR-2: fetchWithRetry in pdfExtraction.ts mirrors the same defensive
+// guard. With maxAttempts <= 0 the loop body is skipped, lastError
+// stays undefined, and the trailing `throw lastError` would surface
+// `undefined`. The fix: a typed SubtitleError is thrown up front.
+describe("fetchWithRetry (ERR-2: defends against zero/negative maxAttempts)", () => {
+	it("throws a typed SubtitleError when maxAttempts is 0", async () => {
+		const { fetchWithRetry } = await import("./pdfExtraction");
+		const fetchFn = vi.fn();
+		await expect(fetchWithRetry(fetchFn, 0)).rejects.toBeInstanceOf(SubtitleError);
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it("throws a typed SubtitleError when maxAttempts is negative", async () => {
+		const { fetchWithRetry } = await import("./pdfExtraction");
+		const fetchFn = vi.fn();
+		await expect(fetchWithRetry(fetchFn, -3)).rejects.toBeInstanceOf(SubtitleError);
+		expect(fetchFn).not.toHaveBeenCalled();
 	});
 });

@@ -161,12 +161,19 @@ async function fetchPdfFromBackground(
 	});
 }
 
-async function fetchWithRetry<T>(
+export async function fetchWithRetry<T>(
 	fetchFn: () => Promise<T>,
 	maxAttempts: number,
 	onRetry?: (attempt: number, error: SubtitleError) => void,
 	signal?: AbortSignal,
 ): Promise<T> {
+	// ERR-2: defensive guard. Mirrors the change in subtitles.ts — a zero
+	// or negative `maxAttempts` would otherwise skip the loop and let the
+	// trailing `throw lastError` surface `undefined`.
+	if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+		throw new SubtitleError("No retry attempts configured", "NETWORK_ERROR", undefined);
+	}
+
 	let lastError: SubtitleError | undefined;
 
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {

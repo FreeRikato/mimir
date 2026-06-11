@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SubtitleError } from "../types";
 import { buildTimeoutError, isRetryableError } from "./subtitles";
 
@@ -80,5 +80,59 @@ describe("buildTimeoutError (bug 1.1: hardcoded 127.0.0.1:8000 in user message)"
 	it("preserves the original URL the request was targeting", () => {
 		const err = buildTimeoutError("https://youtube.com/watch?v=xyz", 5000, "https://api.example.com");
 		expect(err.url).toBe("https://youtube.com/watch?v=xyz");
+	});
+});
+
+// ERR-1: fetchWithRetry must never throw `undefined`. With maxAttempts <= 0
+// the loop body is skipped, lastError stays undefined, and the trailing
+// `throw lastError` would surface `undefined` to the caller — breaking
+// `err instanceof Error` narrowing and producing a confusing toast.
+describe("fetchWithRetry (ERR-1: defends against zero/negative maxAttempts)", () => {
+	it("throws a typed SubtitleError when maxAttempts is 0", async () => {
+		const { fetchWithRetry } = await import("./subtitles");
+		const fetchFn = vi.fn();
+		await expect(fetchWithRetry(fetchFn, 0)).rejects.toBeInstanceOf(SubtitleError);
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it("throws a typed SubtitleError when maxAttempts is negative", async () => {
+		const { fetchWithRetry } = await import("./subtitles");
+		const fetchFn = vi.fn();
+		await expect(fetchWithRetry(fetchFn, -1)).rejects.toBeInstanceOf(SubtitleError);
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it("throws a typed SubtitleError when maxAttempts is a non-integer", async () => {
+		const { fetchWithRetry } = await import("./subtitles");
+		const fetchFn = vi.fn();
+		await expect(fetchWithRetry(fetchFn, 1.5)).rejects.toBeInstanceOf(SubtitleError);
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+});
+
+// ERR-3 characterization: a TypeError thrown on attempt 2 of 3 must still
+// be retried on attempt 3. The previous version was suspected of swallowing
+// the TypeError after the first attempt; today the loop catches it, wraps
+// it as a SubtitleError(NETWORK_ERROR), and isRetryableError returns true,
+// so the retry proceeds. This test pins that behavior so future refactors
+// don't regress it.
+describe("fetchWithRetry (ERR-3: TypeError retried on subsequent attempts)", () => {
+	it("retries a TypeError thrown on attempt 2 and succeeds on attempt 3", async () => {
+		const { fetchWithRetry } = await import("./subtitles");
+		const fetchFn = vi
+			.fn<[], Promise<string>>()
+			.mockRejectedValueOnce(new TypeError("fetch failed"))
+			.mockRejectedValueOnce(new TypeError("fetch failed"))
+			.mockResolvedValueOnce("ok");
+		const result = await fetchWithRetry(fetchFn, 3);
+		expect(result).toBe("ok");
+		expect(fetchFn).toHaveBeenCalledTimes(3);
+	});
+
+	it("a TypeError still propagates after all attempts are exhausted", async () => {
+		const { fetchWithRetry } = await import("./subtitles");
+		const fetchFn = vi.fn<[], Promise<string>>().mockRejectedValue(new TypeError("fetch failed"));
+		await expect(fetchWithRetry(fetchFn, 3)).rejects.toBeInstanceOf(SubtitleError);
+		expect(fetchFn).toHaveBeenCalledTimes(3);
 	});
 });
