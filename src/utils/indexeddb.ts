@@ -42,20 +42,52 @@ class IndexedDB {
 				resolve(this.db);
 			};
 
+			// LIF-1: if another tab (or an older worker) is holding the DB open
+			// during a version upgrade, the open blocks indefinitely. We close
+			// our connection on `blocked` and surface a typed error so the
+			// caller can show the user a real message instead of hanging.
+			request.onblocked = () => {
+				this.db?.close();
+				this.db = null;
+				reject(
+					new Error(
+						"IndexedDB upgrade blocked by another open connection. Please close other Mimir side panels and retry.",
+					),
+				);
+			};
+
 			request.onupgradeneeded = (event) => {
 				const db = (event.target as IDBOpenDBRequest).result;
-
-				// Create history object store with timestamp as key path for efficient sorting
-				if (!db.objectStoreNames.contains(STORE_NAME)) {
-					const store = db.createObjectStore(STORE_NAME, { keyPath: "id" });
-
-					// Create indexes for efficient querying
-					store.createIndex("timestamp", "timestamp", { unique: false });
-					store.createIndex("format", "format", { unique: false });
-					store.createIndex("exportType", "exportType", { unique: false });
+				// LIF-2: step through every version between oldVersion and
+				// DB_VERSION, not just the latest. A user upgrading v1 -> v3
+				// (skipping v2) used to silently drop any v2 object store
+				// data because the upgrade callback only handled v1 -> v3.
+				const oldVersion = event.oldVersion;
+				for (let v = oldVersion + 1; v <= DB_VERSION; v++) {
+					IndexedDB.upgradeSchema(db, v);
 				}
 			};
 		});
+	}
+
+	/**
+	 * Apply the schema changes for a single version bump. Centralised so
+	 * every `oldVersion -> newVersion` step is explicitly named and any
+	 * future migration is easy to slot in.
+	 */
+	private static upgradeSchema(db: IDBDatabase, version: number): void {
+		if (version === 1) {
+			// v1: create history object store with timestamp as key path
+			// for efficient sorting.
+			if (!db.objectStoreNames.contains(STORE_NAME)) {
+				const store = db.createObjectStore(STORE_NAME, { keyPath: "id" });
+				store.createIndex("timestamp", "timestamp", { unique: false });
+				store.createIndex("format", "format", { unique: false });
+				store.createIndex("exportType", "exportType", { unique: false });
+			}
+		}
+		// Future versions slot in here. Example:
+		// if (version === 2) { ... }
 	}
 
 	/**
