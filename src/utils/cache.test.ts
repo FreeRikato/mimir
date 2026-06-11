@@ -142,3 +142,99 @@ describe("setCachedContent (bug 1.5: write lock)", () => {
 		expect(stats.entryCount).toBe(0);
 	});
 });
+
+// DI-1: getCachedTabs must validate the cached timestamp before trusting
+// the entry. A corrupted payload with `timestamp: Number.MAX_SAFE_INTEGER`
+// (or NaN, negative, or a future date) used to slip past the simple
+// `now - timestamp > TTL` check and resurrect a stale entry.
+describe("getCachedTabs (DI-1: timestamp validation)", () => {
+	it("rejects an entry whose timestamp is Number.MAX_SAFE_INTEGER (corrupted)", async () => {
+		const corrupted = {
+			data: [{ domain: "x", tabs: [] }],
+			timestamp: Number.MAX_SAFE_INTEGER,
+			size: 0,
+			accessCount: 1,
+			lastAccess: 0,
+		};
+		session.store["mimir_cached_tabs"] = corrupted;
+
+		const { getCachedTabs } = await loadModule();
+		const result = await getCachedTabs();
+		expect(result).toBeNull();
+		// The corrupted entry should be evicted.
+		expect(session.store["mimir_cached_tabs"]).toBeUndefined();
+	});
+
+	it("rejects an entry with a negative timestamp", async () => {
+		session.store["mimir_cached_tabs"] = {
+			data: [{ domain: "x", tabs: [] }],
+			timestamp: -1,
+			size: 0,
+			accessCount: 1,
+			lastAccess: 0,
+		};
+		const { getCachedTabs } = await loadModule();
+		expect(await getCachedTabs()).toBeNull();
+	});
+
+	it("rejects an entry with a future timestamp (clock skew or attacker)", async () => {
+		session.store["mimir_cached_tabs"] = {
+			data: [{ domain: "x", tabs: [] }],
+			timestamp: Date.now() + 60_000,
+			size: 0,
+			accessCount: 1,
+			lastAccess: 0,
+		};
+		const { getCachedTabs } = await loadModule();
+		expect(await getCachedTabs()).toBeNull();
+	});
+
+	it("returns fresh entries", async () => {
+		session.store["mimir_cached_tabs"] = {
+			data: [{ domain: "x", tabs: [] }],
+			timestamp: Date.now() - 1_000, // 1 second ago, well within TTL
+			size: 0,
+			accessCount: 1,
+			lastAccess: 0,
+		};
+		const { getCachedTabs } = await loadModule();
+		const result = await getCachedTabs();
+		expect(result).toEqual([{ domain: "x", tabs: [] }]);
+	});
+});
+
+// LIF-3: setCachedTabs should detect QuotaExceededError by name (the
+// actual DOMException thrown by chrome.storage.session) and retry once
+// after emergency eviction. A string-match on the error message was
+// brittle and missed the typed DOMException.
+describe("setCachedTabs (LIF-3: QuotaExceededError handling)", () => {
+	it("retries the write after emergency eviction when the first set throws QuotaExceededError", async () => {
+		let setCalls = 0;
+		const localStorage: StorageArea = {
+			store: {},
+			reset: () => {},
+			get: vi.fn(async (keys) => {
+				if (keys === null) return { ...localStorage.store };
+				const out: Record<string, unknown> = {};
+				for (const k of keys) if (k in localStorage.store) out[k] = localStorage.store[k];
+				return out;
+			}),
+			set: vi.fn(async (items) => {
+				setCalls += 1;
+				if (setCalls === 1) {
+					throw new DOMException("QUOTA_BYTES quota exceeded", "QuotaExceededError");
+				}
+				Object.assign(localStorage.store, items);
+			}),
+			remove: vi.fn(async () => {}),
+		};
+		(globalThis as unknown as { chrome: { storage: { session: StorageArea } } }).chrome = {
+			storage: { session: localStorage },
+		};
+		vi.resetModules();
+		const { setCachedTabs } = await import("./cache");
+		await setCachedTabs([{ domain: "x", tabs: [] }]);
+		expect(setCalls).toBeGreaterThanOrEqual(2);
+		expect(localStorage.store["mimir_cached_tabs"]).toBeDefined();
+	});
+});

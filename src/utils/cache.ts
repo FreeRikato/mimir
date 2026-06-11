@@ -251,10 +251,18 @@ export async function getCachedTabs(): Promise<DomainGroup[] | null> {
 
 		if (!entry) return null;
 
-		const now = Date.now();
+		// DI-1: validate the cached timestamp before trusting the entry.
+		// A corrupted payload (timestamp: Number.MAX_SAFE_INTEGER, NaN,
+		// negative, or a future date) used to slip past the simple
+		// `now - timestamp > TTL` check and resurrect a stale entry.
+		if (typeof entry.timestamp !== "number" || !Number.isFinite(entry.timestamp) || entry.timestamp < 0) {
+			await chrome.storage.session.remove([CACHE_KEY]);
+			await removeEntryMetadata(CACHE_KEY);
+			return null;
+		}
 
-		// Check for expiration
-		if (now - entry.timestamp > CACHE_TTL) {
+		const now = Date.now();
+		if (entry.timestamp > now || now - entry.timestamp > CACHE_TTL) {
 			await chrome.storage.session.remove([CACHE_KEY]);
 			await removeEntryMetadata(CACHE_KEY);
 			return null;
@@ -307,14 +315,21 @@ export async function setCachedTabs(data: DomainGroup[]): Promise<void> {
 				metadata.totalSize -= existingEntry.size;
 			}
 
-			// Write the cache entry
+			// LIF-3: write the cache entry. The error class from
+			// chrome.storage.session is `QuotaExceededError` (a DOMException),
+			// not a message string. Detect by name first; fall back to message
+			// for older Chromium builds.
+			const isQuotaError = (e: unknown): boolean => {
+				if (e instanceof DOMException && e.name === "QuotaExceededError") return true;
+				if (e instanceof Error && (e.message.includes("QUOTA") || e.message.includes("quota"))) return true;
+				return false;
+			};
 			try {
 				await chrome.storage.session.set({ [CACHE_KEY]: entry });
 				// Update metadata after successful write
 				await updateEntryMetadata(CACHE_KEY, entrySize, timestamp);
 			} catch (setErr) {
-				// If we still get a quota error, try emergency eviction
-				if (setErr instanceof Error && (setErr.message.includes("QUOTA") || setErr.message.includes("quota"))) {
+				if (isQuotaError(setErr)) {
 					console.warn("Storage quota exceeded, performing emergency eviction");
 
 					// Rebuild metadata to ensure accuracy
@@ -325,9 +340,17 @@ export async function setCachedTabs(data: DomainGroup[]): Promise<void> {
 						await evictLRUEntry();
 					}
 
-					// Retry write
-					await chrome.storage.session.set({ [CACHE_KEY]: entry });
-					await updateEntryMetadata(CACHE_KEY, entrySize, timestamp);
+					// Retry write once
+					try {
+						await chrome.storage.session.set({ [CACHE_KEY]: entry });
+						await updateEntryMetadata(CACHE_KEY, entrySize, timestamp);
+					} catch (retryErr) {
+						if (isQuotaError(retryErr)) {
+							console.warn("Quota exceeded even after emergency eviction; dropping this write", retryErr);
+						} else {
+							throw retryErr;
+						}
+					}
 				} else {
 					throw setErr;
 				}
