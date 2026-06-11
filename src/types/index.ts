@@ -150,12 +150,28 @@ export class SubtitleError extends Error {
 	}
 }
 
+// UX-1: cause discriminator for ExtractionErrorInfo. Lives in types/ so
+// both the info interface and the helper module (src/utils/extractionError)
+// can reference it without a circular import.
+export type ExtractionErrorCause =
+	| "default"
+	| "scripting"
+	| "scripting-timeout"
+	| "youtube-empty"
+	| "x-not-captured"
+	| "x-schema-drift";
+
 export interface ExtractionErrorInfo {
 	tabId: number;
 	url: string;
 	title: string;
 	errorCode: SubtitleErrorCode;
 	userMessage: string;
+	// UX-1: optional cause discriminator. When present, UI affordances
+	// (e.g. the transient x-not-captured banner) match on this field, not
+	// on substrings of the localized `userMessage`. Safe to omit on the
+	// default error path so existing callers are not affected.
+	cause?: ExtractionErrorCause;
 	// ERR-5: original stack from the underlying Error, when available.
 	// The user-facing `userMessage` is kept short; the stack is logged
 	// via console.warn so a developer can correlate to the source.
