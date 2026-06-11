@@ -236,6 +236,9 @@ async function extractTab(
 					// Bug 1.24: this is the "not yet captured" path — the X content
 					// script hasn't run on the page yet. Surface a clear retry hint
 					// instead of a generic PARSE_ERROR toast.
+					// UX-2: the banner is flipped by the caller of this
+					// helper (it owns the React state) — see the loop that
+					// collects `errors` and inspects `cause === "x-not-captured"`.
 					return {
 						result: null,
 						error: createExtractionError({ tabId: id, tab, err: null, cause: "x-not-captured" }),
@@ -732,6 +735,17 @@ export function SidePanelApp() {
 	const [isRefreshing, setIsRefreshing] = useState(false);
 	const [extractionStatus, setExtractionStatus] = useState<ExtractionStatus>("idle");
 	const [extractionErrors, setExtractionErrors] = useState<ExtractionErrorInfo[]>([]);
+	// UX-2: transient banner when an x-not-captured error is surfaced.
+	// Cleared after 5s or on the next successful X extract.
+	const [xCapturePending, setXCapturePending] = useState(false);
+
+	useEffect(() => {
+		if (!xCapturePending) return;
+		const timer = setTimeout(() => {
+			if (isMountedRef.current) setXCapturePending(false);
+		}, 5000);
+		return () => clearTimeout(timer);
+	}, [xCapturePending]);
 
 	// Tabs to right state
 	const [tabsToRightCount, setTabsToRightCount] = useState(0);
@@ -1034,6 +1048,11 @@ export function SidePanelApp() {
 
 			setExtractionErrors(errors);
 			checkAndPromptPdfUpload(errors);
+			// UX-2: flip the transient banner when any tab reported
+			// x-not-captured. The state auto-clears after 5s.
+			if (errors.some((e) => e.userMessage.toLowerCase().includes("scroll"))) {
+				setXCapturePending(true);
+			}
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
@@ -1213,6 +1232,9 @@ export function SidePanelApp() {
 
 			setToRightExtractionErrors(errors);
 			checkAndPromptPdfUpload(errors);
+			if (errors.some((e) => e.userMessage.toLowerCase().includes("scroll"))) {
+				setXCapturePending(true);
+			}
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
@@ -1350,6 +1372,9 @@ export function SidePanelApp() {
 
 			setHighlightedExtractionErrors(errors);
 			checkAndPromptPdfUpload(errors);
+			if (errors.some((e) => e.userMessage.toLowerCase().includes("scroll"))) {
+				setXCapturePending(true);
+			}
 			const validResults = results;
 
 			// Always copy valid results to clipboard, even if cancelled
@@ -1727,6 +1752,25 @@ export function SidePanelApp() {
 				highlightedExtractionErrors={highlightedExtractionErrors}
 				onOpenSettings={handleOpenSettings}
 			/>
+
+			{xCapturePending && (
+				<div
+					role="status"
+					aria-live="polite"
+					className="glass-light border border-cyan-500/30 rounded-lg p-2 mb-2 flex items-center justify-between"
+				>
+					<span className="text-xs text-cyan-200">
+						Capturing tweets in background… scroll the thread to capture more.
+					</span>
+					<button
+						onClick={() => setXCapturePending(false)}
+						className="text-glass-muted hover:text-white ml-2"
+						aria-label="Dismiss"
+					>
+						×
+					</button>
+				</div>
+			)}
 
 			{/* History Panel */}
 			<HistoryPanel
