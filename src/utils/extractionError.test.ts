@@ -98,3 +98,48 @@ describe("createExtractionError (bug 1.24: X/Twitter not-captured vs schema-drif
 		expect(info.userMessage.toLowerCase()).toMatch(/file a bug|schema/);
 	});
 });
+
+// ERR-5: the original stack of the underlying Error should be preserved
+// in the ExtractionErrorInfo so a developer reading the console can
+// correlate the user-facing message to the source.
+describe("createExtractionError (ERR-5: original stack is preserved)", () => {
+	it("populates originalStack from a plain Error", () => {
+		const err = new TypeError("boom");
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err });
+		expect(info.originalStack).toBeDefined();
+		expect(info.originalStack).toContain("TypeError");
+	});
+
+	it("populates originalStack from a SubtitleError's originalError when present", () => {
+		const original = new RangeError("nope");
+		const sub = new SubtitleError("wrapped", "UNKNOWN_ERROR", original, "https://x");
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err: sub });
+		expect(info.originalStack).toContain("RangeError");
+	});
+
+	it("leaves originalStack undefined for non-Error inputs", () => {
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err: "string error" });
+		expect(info.originalStack).toBeUndefined();
+	});
+});
+
+// ERR-7: a TabSuspendedError from chrome.scripting is a DOMException but
+// it is NOT a network failure. The default path must not misclassify
+// it as NETWORK_ERROR; otherwise the user sees a misleading "Network
+// error" when the real cause is a suspended tab (already handled in
+// `cause: "scripting"`, but the default path should also be correct).
+describe("createExtractionError (ERR-7: TabSuspendedError classification)", () => {
+	it("maps a TabSuspendedError to UNKNOWN_ERROR, not NETWORK_ERROR", () => {
+		const err = new Error("tab is suspended");
+		err.name = "TabSuspendedError";
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err });
+		expect(info.errorCode).toBe("UNKNOWN_ERROR");
+		expect(info.userMessage.toLowerCase()).toContain("tab");
+	});
+
+	it("keeps NETWORK_ERROR for a regular DOMException with name 'NetworkError'", () => {
+		const domErr = new DOMException("boom", "NetworkError");
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err: domErr });
+		expect(info.errorCode).toBe("NETWORK_ERROR");
+	});
+});

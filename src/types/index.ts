@@ -156,6 +156,10 @@ export interface ExtractionErrorInfo {
 	title: string;
 	errorCode: SubtitleErrorCode;
 	userMessage: string;
+	// ERR-5: original stack from the underlying Error, when available.
+	// The user-facing `userMessage` is kept short; the stack is logged
+	// via console.warn so a developer can correlate to the source.
+	originalStack?: string;
 }
 
 export type ExtractionStatus = "idle" | "extracting" | "success" | "partial" | "error";

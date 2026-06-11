@@ -152,15 +152,28 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 	let code: SubtitleErrorCode = "UNKNOWN_ERROR";
 	let userMessage = "Extraction failed";
 
+	let originalStack: string | undefined;
+
 	if (err instanceof SubtitleError) {
 		code = err.code;
 		userMessage = err.message;
+		originalStack = err.originalError?.stack ?? err.stack;
 	} else if (err instanceof Error) {
 		const name = err.name || "Error";
 		const message = err.message || "";
-		// For DOMException / NetworkError / AbortError, keep NETWORK_ERROR
-		// because the underlying cause is most often a network/protocol failure.
-		if (isNetworkShapedError(err)) {
+		originalStack = err.stack;
+		// ERR-7: a chrome.scripting TabSuspendedError is a DOMException but it
+		// is NOT a network failure. The scripting path already handles it
+		// explicitly via `cause: "scripting"`; the default path should not
+		// misclassify it as NETWORK_ERROR, otherwise the user sees a
+		// misleading "Network error" instead of the real cause. The check
+		// sits ahead of `isNetworkShapedError` so the DOMException-name
+		// branch below does not steal this case.
+		if (name === "TabSuspendedError") {
+			code = "UNKNOWN_ERROR";
+		} else if (isNetworkShapedError(err)) {
+			// For DOMException / NetworkError / AbortError, keep NETWORK_ERROR
+			// because the underlying cause is most often a network/protocol failure.
 			code = "NETWORK_ERROR";
 		}
 		if (message) {
@@ -175,11 +188,21 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 		userMessage = (err as { message?: string }).message || `Unhandled error: ${JSON.stringify(err).slice(0, 200)}`;
 	}
 
+	// ERR-5: surface the original stack. In dev builds we also log a single
+	// warning so the developer console has the trace; production behavior
+	// is unchanged.
+	if (originalStack) {
+		if (import.meta.env?.DEV) {
+			console.warn(`[mimir] extraction error on tab ${tabId}: ${userMessage}`, originalStack);
+		}
+	}
+
 	return {
 		tabId,
 		url: tab?.url || "unknown",
 		title: tab?.title || "Unknown",
 		errorCode: code,
 		userMessage,
+		originalStack,
 	};
 }
