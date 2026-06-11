@@ -61,3 +61,39 @@ describe("isCachedTabsPayloadValid (bug 1.16: payload validation)", () => {
 		expect(isCachedTabsPayloadValid(bad2)).toBe(false);
 	});
 });
+
+// DI-4: filterValidGroups drops corrupt group elements (and tabs) but
+// keeps the rest. The previous shape check only validated the root
+// array; a payload like `[{ domain: "x", tabs: [null, valid] }]` would
+// be applied as-is and crash downstream consumers.
+describe("filterValidGroups (DI-4: element shape validation)", () => {
+	it("drops a corrupt group element but keeps the rest", async () => {
+		const { filterValidGroups } = await import("./sessionCacheValidation");
+		const groups = filterValidGroups([
+			null,
+			{ domain: "x.com", tabs: [] },
+			{ domain: "y.com", tabs: [{ id: 1, url: "u", title: "t" }] },
+			{ domain: 42, tabs: [] }, // domain is not a string
+		]);
+		expect(groups).toHaveLength(2);
+		expect(groups[0].domain).toBe("x.com");
+		expect(groups[1].domain).toBe("y.com");
+	});
+
+	it("drops corrupt tabs from an otherwise-valid group", async () => {
+		const { filterValidGroups } = await import("./sessionCacheValidation");
+		const groups = filterValidGroups([
+			{
+				domain: "x.com",
+				tabs: [
+					null,
+					{ id: 1, url: "https://x.com/a", title: "A" },
+					{ id: "1", url: "https://x.com/b" }, // missing title, id is string
+				],
+			},
+		]);
+		expect(groups).toHaveLength(1);
+		expect(groups[0].tabs).toHaveLength(1);
+		expect(groups[0].tabs[0].title).toBe("A");
+	});
+});

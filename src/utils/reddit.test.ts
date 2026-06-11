@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SubtitleError } from "../types";
 import { fetchRedditPost } from "./reddit";
 
 const VALID_URL = "https://www.reddit.com/r/programming/comments/abc123/some_post/";

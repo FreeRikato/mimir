@@ -120,7 +120,7 @@ describe("fetchWithRetry (ERR-3: TypeError retried on subsequent attempts)", () 
 	it("retries a TypeError thrown on attempt 2 and succeeds on attempt 3", async () => {
 		const { fetchWithRetry } = await import("./subtitles");
 		const fetchFn = vi
-			.fn<[], Promise<string>>()
+			.fn<() => Promise<string>>()
 			.mockRejectedValueOnce(new TypeError("fetch failed"))
 			.mockRejectedValueOnce(new TypeError("fetch failed"))
 			.mockResolvedValueOnce("ok");
@@ -131,7 +131,7 @@ describe("fetchWithRetry (ERR-3: TypeError retried on subsequent attempts)", () 
 
 	it("a TypeError still propagates after all attempts are exhausted", async () => {
 		const { fetchWithRetry } = await import("./subtitles");
-		const fetchFn = vi.fn<[], Promise<string>>().mockRejectedValue(new TypeError("fetch failed"));
+		const fetchFn = vi.fn<() => Promise<string>>().mockRejectedValue(new TypeError("fetch failed"));
 		await expect(fetchWithRetry(fetchFn, 3)).rejects.toBeInstanceOf(SubtitleError);
 		expect(fetchFn).toHaveBeenCalledTimes(3);
 	});
