@@ -94,3 +94,53 @@ describe("cancellableExecuteScript", () => {
 		).rejects.toThrow("frame not loaded");
 	});
 });
+
+// MEM-1: when the hard timeout fires, the wrapper now invokes an optional
+// onTimeout hook with the tabId hint so the caller can apply a soft-kill
+// (e.g. chrome.tabs.discard) to clear the dangling MV3 executeScript from
+// Chrome's internal queue. The hook is a fire-and-forget callback; the
+// Promise still rejects with ScriptingTimeoutError.
+describe("cancellableExecuteScript (MEM-1: onTimeout soft-kill hook)", () => {
+	it("invokes onTimeout(tabId) when the timeout fires", async () => {
+		vi.mocked(scriptingStub.scripting.executeScript).mockReturnValue(new Promise(() => {}));
+		const { cancellableExecuteScript, ScriptingTimeoutError } = await loadModule();
+		const onTimeout = vi.fn();
+		const promise = cancellableExecuteScript({ target: { tabId: 42 }, func: () => "x" }, { timeoutMs: 30, onTimeout });
+		await expect(promise).rejects.toBeInstanceOf(ScriptingTimeoutError);
+		expect(onTimeout).toHaveBeenCalledTimes(1);
+		expect(onTimeout).toHaveBeenCalledWith(42);
+	});
+
+	it("does not invoke onTimeout when the underlying call resolves in time", async () => {
+		vi.mocked(scriptingStub.scripting.executeScript).mockResolvedValue([{ result: "ok" }]);
+		const { cancellableExecuteScript } = await loadModule();
+		const onTimeout = vi.fn();
+		await cancellableExecuteScript({ target: { tabId: 1 }, func: () => "x" }, { timeoutMs: 1000, onTimeout });
+		expect(onTimeout).not.toHaveBeenCalled();
+	});
+
+	it("does not invoke onTimeout when the caller's AbortSignal fires first", async () => {
+		vi.mocked(scriptingStub.scripting.executeScript).mockReturnValue(new Promise(() => {}));
+		const { cancellableExecuteScript } = await loadModule();
+		const onTimeout = vi.fn();
+		const controller = new AbortController();
+		const promise = cancellableExecuteScript(
+			{ target: { tabId: 1 }, func: () => "x" },
+			{ timeoutMs: 5000, signal: controller.signal, onTimeout },
+		);
+		setTimeout(() => controller.abort(), 20);
+		await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+		expect(onTimeout).not.toHaveBeenCalled();
+	});
+
+	it("swallows a rejection from onTimeout so the wrapper still rejects with ScriptingTimeoutError", async () => {
+		vi.mocked(scriptingStub.scripting.executeScript).mockReturnValue(new Promise(() => {}));
+		const { cancellableExecuteScript, ScriptingTimeoutError } = await loadModule();
+		const onTimeout = vi.fn(() => {
+			throw new Error("discard blew up");
+		});
+		const promise = cancellableExecuteScript({ target: { tabId: 7 }, func: () => "x" }, { timeoutMs: 30, onTimeout });
+		await expect(promise).rejects.toBeInstanceOf(ScriptingTimeoutError);
+		expect(onTimeout).toHaveBeenCalledTimes(1);
+	});
+});

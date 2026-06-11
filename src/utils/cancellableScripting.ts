@@ -17,23 +17,26 @@
  * caller can record a `TIMEOUT` extraction error and the worker chain can
  * continue with the next tab.
  *
- * MEM-3 — known limitation (not fixable in this wrapper):
+ * MEM-1 — soft-kill via onTimeout:
  *   The `Promise.race` below stops the *caller* from waiting, but the
  *   underlying `chrome.scripting.executeScript` call is still in flight
- *   inside Chrome's renderer. It will eventually settle, and the SW queue
- *   still holds the entry. Cancelling 20 extractions in quick succession
- *   leaves up to 20 dangling `executeScript` calls in the SW.
+ *   inside Chrome's renderer. It will eventually settle, and the SW
+ *   queue still holds the entry. Cancelling 20 extractions in quick
+ *   succession leaves up to 20 dangling `executeScript` calls in the SW.
  *
- *   There is no public Chrome API to cancel a pending `executeScript`. The
- *   strongest available kill switch is `chrome.tabs.discard(tabId)` from a
- *   different MV3 surface (the side panel), which forces the renderer to
- *   tear down and unblocks the SW queue at the cost of reloading the tab
- *   if the user navigates back to it. `extractTabsConcurrent` does not
- *   currently call `discard` because the cost (losing in-page state) is
- *   almost always higher than the benefit (clearing a stuck request). If a
- *   future change ever needs a kill switch, plumb the `tabId` through
- *   `cancellableExecuteScript's` `injection.target` and call
- *   `chrome.tabs.discard` from the side panel on `AbortError`.
+ *   The fix: the wrapper exposes an optional `onTimeout(tabId)` hook
+ *   that fires the moment the hard timeout trips, BEFORE the wrapper
+ *   rejects with `ScriptingTimeoutError`. The caller can use that hook
+ *   to apply a soft-kill (e.g. `chrome.tabs.discard(tabId)` from a
+ *   different MV3 surface) which forces the renderer to tear down and
+ *   unblocks the SW queue. `extractTabsConcurrent` wires the hook to
+ *   `chrome.tabs.discard` gated on a `discardOnTimeout` flag — the
+ *   call is destructive (the user loses in-page state on that tab) so
+ *   it is OFF by default.
+ *
+ *   The hook is fire-and-forget. A throw inside the hook is swallowed
+ *   so the wrapper still rejects with `ScriptingTimeoutError` and the
+ *   worker can continue.
  */
 
 export class ScriptingTimeoutError extends Error {
@@ -54,6 +57,16 @@ export interface CancellableScriptingOptions {
 	timeoutMs: number;
 	/** External AbortSignal — when fired, the Promise rejects with an `AbortError`. */
 	signal?: AbortSignal;
+	/**
+	 * MEM-1: soft-kill hook fired when the hard timeout trips. Receives
+	 * the tabId hint derived from `injection.target` (or `undefined` if
+	 * the target has no tabId). The hook is fire-and-forget; any throw
+	 * is swallowed so the wrapper still rejects with
+	 * `ScriptingTimeoutError`. Use this to apply
+	 * `chrome.tabs.discard(tabId)` or similar destructive cleanup
+	 * against a renderer that the MV3 executeScript is wedged on.
+	 */
+	onTimeout?: (tabId: number | undefined) => void | Promise<void>;
 }
 
 type ExecuteScriptInjection = chrome.scripting.InjectionResult;
@@ -127,7 +140,7 @@ export function cancellableExecuteScript(
 	};
 	const restArgs = (rest[0] && typeof rest[0] === "object" ? rest.slice(1) : rest) as unknown[];
 
-	const { timeoutMs, signal: externalSignal } = options;
+	const { timeoutMs, signal: externalSignal, onTimeout } = options;
 	const tabIdHint = readTabIdFromArgs([injection.target, ...restArgs]);
 
 	// Honor pre-aborted signal without spinning up the race.
@@ -188,7 +201,25 @@ export function cancellableExecuteScript(
 		const timeoutPromise = new Promise<never>((_, rejectTimeout) => {
 			timeoutController.signal.addEventListener(
 				"abort",
-				() => rejectTimeout(new ScriptingTimeoutError(timeoutMs, tabIdHint)),
+				() => {
+					// MEM-1: fire the soft-kill hook before rejecting. The
+					// hook is fire-and-forget; we don't await it so the
+					// wrapper still rejects synchronously with the timeout
+					// error. A throw from the hook is captured so it cannot
+					// escape via the addEventListener handler.
+					if (onTimeout) {
+						try {
+							const result = onTimeout(tabIdHint);
+							if (result && typeof (result as Promise<void>).catch === "function") {
+								(result as Promise<void>).catch(() => {});
+							}
+						} catch {
+							// Swallow — soft-kill failures must not change the
+							// rejection that the caller observes.
+						}
+					}
+					rejectTimeout(new ScriptingTimeoutError(timeoutMs, tabIdHint));
+				},
 				{ once: true },
 			);
 		});
