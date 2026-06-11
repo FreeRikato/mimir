@@ -143,3 +143,39 @@ describe("createExtractionError (ERR-7: TabSuspendedError classification)", () =
 		expect(info.errorCode).toBe("NETWORK_ERROR");
 	});
 });
+
+// UX-1: every cause-branched ExtractionErrorInfo must populate `cause`
+// with the matching discriminator, so UI affordances (e.g. the
+// x-not-captured banner) match on a stable field rather than substrings
+// of the localized user message.
+describe("createExtractionError (UX-1: cause discriminator is populated)", () => {
+	it("sets cause='scripting-timeout' on the timeout branch", () => {
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err: null, cause: "scripting-timeout" });
+		expect(info.cause).toBe("scripting-timeout");
+	});
+
+	it("sets cause='scripting' on the scripting branch", () => {
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err: new Error("x"), cause: "scripting" });
+		expect(info.cause).toBe("scripting");
+	});
+
+	it("sets cause='youtube-empty' on the youtube-empty branch", () => {
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err: null, cause: "youtube-empty" });
+		expect(info.cause).toBe("youtube-empty");
+	});
+
+	it("sets cause='x-not-captured' on the x-not-captured branch", () => {
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err: null, cause: "x-not-captured" });
+		expect(info.cause).toBe("x-not-captured");
+	});
+
+	it("sets cause='x-schema-drift' on the x-schema-drift branch", () => {
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err: null, cause: "x-schema-drift" });
+		expect(info.cause).toBe("x-schema-drift");
+	});
+
+	it("leaves cause undefined on the default branch so callers can distinguish", () => {
+		const info = createExtractionError({ tabId: 1, tab: fakeTab, err: new Error("plain") });
+		expect(info.cause).toBeUndefined();
+	});
+});

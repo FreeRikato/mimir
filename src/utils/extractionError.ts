@@ -1,4 +1,4 @@
-import type { ExtractionErrorInfo } from "../types";
+import type { ExtractionErrorCause, ExtractionErrorInfo } from "../types";
 import { SubtitleError, type SubtitleErrorCode } from "../types";
 import { t as tMessage } from "./extractionError.messages";
 
@@ -27,15 +27,14 @@ import { t as tMessage } from "./extractionError.messages";
  *   When the GraphQL response does not contain the focal tweet, callers pass
  *   `cause: "x-not-captured"` (retry hint) or `cause: "x-schema-drift"`
  *   (bug-report hint). Each maps to a distinct user-facing message and code.
+ *
+ * UX-1: the `ExtractionErrorCause` union is now defined in src/types/index.ts
+ *   so the ExtractionErrorInfo shape can reference it without a circular
+ *   import. The runtime helper still re-exports the name for callers that
+ *   already import it from this module.
  */
 
-export type ExtractionErrorCause =
-	| "default"
-	| "scripting"
-	| "scripting-timeout"
-	| "youtube-empty"
-	| "x-not-captured"
-	| "x-schema-drift";
+export type { ExtractionErrorCause } from "../types";
 
 export interface TabLike {
 	id?: number;
@@ -103,6 +102,7 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 			title: tab?.title || "Unknown",
 			errorCode: "TIMEOUT",
 			userMessage: tMessage("extraction.scripting.timeout"),
+			cause: "scripting-timeout",
 		};
 	}
 
@@ -114,6 +114,7 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 			title: tab?.title || "Unknown",
 			errorCode: reason.code,
 			userMessage: reason.userMessage,
+			cause: "scripting",
 		};
 	}
 
@@ -124,6 +125,7 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 			title: tab?.title || "Unknown",
 			errorCode: "NO_SUBTITLES",
 			userMessage: tMessage("extraction.youtube.empty"),
+			cause: "youtube-empty",
 		};
 	}
 
@@ -134,6 +136,7 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 			title: tab?.title || "Unknown",
 			errorCode: "PARSE_ERROR",
 			userMessage: tMessage("extraction.x.not_captured"),
+			cause: "x-not-captured",
 		};
 	}
 
@@ -144,6 +147,7 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 			title: tab?.title || "Unknown",
 			errorCode: "PARSE_ERROR",
 			userMessage: tMessage("extraction.x.schema_drift"),
+			cause: "x-schema-drift",
 		};
 	}
 
