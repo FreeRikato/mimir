@@ -1,5 +1,6 @@
 import type { ExtractionErrorInfo } from "../types";
 import { SubtitleError, type SubtitleErrorCode } from "../types";
+import { t as tMessage } from "./extractionError.messages";
 
 /**
  * Normalize an unknown error thrown during extraction into the
@@ -54,19 +55,19 @@ type ScriptingReason = "tab_suspended" | "permission_denied" | "frame_not_loaded
 const SCRIPTING_MESSAGE_BY_REASON: Record<ScriptingReason, { code: SubtitleErrorCode; userMessage: string }> = {
 	tab_suspended: {
 		code: "NETWORK_ERROR",
-		userMessage: "Tab is suspended. Activate the tab and try again.",
+		userMessage: tMessage("extraction.scripting.tab_suspended"),
 	},
 	permission_denied: {
 		code: "API_ERROR",
-		userMessage: "Permission denied. Mimir cannot read this page.",
+		userMessage: tMessage("extraction.scripting.permission_denied"),
 	},
 	frame_not_loaded: {
 		code: "NETWORK_ERROR",
-		userMessage: "The page has not finished loading. Wait a moment and try again.",
+		userMessage: tMessage("extraction.scripting.frame_not_loaded"),
 	},
 	default: {
 		code: "NETWORK_ERROR",
-		userMessage: "Could not read this page. The tab may be suspended or restricted.",
+		userMessage: tMessage("extraction.scripting.default"),
 	},
 };
 
@@ -101,7 +102,7 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 			url: tab?.url || "unknown",
 			title: tab?.title || "Unknown",
 			errorCode: "TIMEOUT",
-			userMessage: "Extraction timed out. The page may be suspended or still loading. Try again in a moment.",
+			userMessage: tMessage("extraction.scripting.timeout"),
 		};
 	}
 
@@ -122,7 +123,7 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 			url: tab?.url || "unknown",
 			title: tab?.title || "Unknown",
 			errorCode: "NO_SUBTITLES",
-			userMessage: "YouTube returned no subtitles for this video. Try another language or a different video.",
+			userMessage: tMessage("extraction.youtube.empty"),
 		};
 	}
 
@@ -132,8 +133,7 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 			url: tab?.url || "unknown",
 			title: tab?.title || "Unknown",
 			errorCode: "PARSE_ERROR",
-			userMessage:
-				"Tweet data not captured yet. Scroll the thread to capture it, then click Retry. The page must be fully loaded.",
+			userMessage: tMessage("extraction.x.not_captured"),
 		};
 	}
 
@@ -143,8 +143,7 @@ export function createExtractionError(input: CreateExtractionErrorInput): Extrac
 			url: tab?.url || "unknown",
 			title: tab?.title || "Unknown",
 			errorCode: "PARSE_ERROR",
-			userMessage:
-				"X/Twitter response shape changed (schema drift). Please file a bug with the URL so Mimir can be updated.",
+			userMessage: tMessage("extraction.x.schema_drift"),
 		};
 	}
 
