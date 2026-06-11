@@ -133,6 +133,28 @@ function extractItemContent(itemContent: ItemContent | undefined): TweetResult |
 
 // ── Main formatter ────────────────────────────────────────────────────────────
 
+// DI-3: the focal tweet's `entryId` is the only reliable signal that we
+// have located the user's targeted tweet inside the GraphQL response.
+// Twitter's prefix has been `tweet-` since 2023, but the schema has
+// shifted before and may shift again (e.g. `status-`, `tweet-with-`).
+// This helper validates the shape explicitly so a future schema change
+// is surfaced as a typed `PARSE_ERROR` instead of silently falling
+// through to a different tweet.
+const ENTRY_ID_PREFIXES = ["tweet-", "status-"] as const;
+
+function entryIdForTweet(tweetId: string, prefix: string): string {
+	return `${prefix}${tweetId}`;
+}
+
+function findMatchingEntryId(entryId: string, tweetId: string): string | null {
+	for (const prefix of ENTRY_ID_PREFIXES) {
+		if (entryId === entryIdForTweet(tweetId, prefix) || entryId.startsWith(`${entryIdForTweet(tweetId, prefix)}-`)) {
+			return entryIdForTweet(tweetId, prefix);
+		}
+	}
+	return null;
+}
+
 export function formatXThread(rawData: unknown, tweetId: string): { title: string; text: string; mainFound: boolean } {
 	const data = rawData as TweetDetailResponse;
 	const instructions = data?.data?.threaded_conversation_with_injections_v2?.instructions ?? [];
@@ -153,7 +175,8 @@ export function formatXThread(rawData: unknown, tweetId: string): { title: strin
 		// Skip cursor entries
 		if (entryId.startsWith("cursor-") || entryId.includes("-cursor-")) continue;
 
-		const isMainTweet = entryId === `tweet-${tweetId}` || entryId.startsWith(`tweet-${tweetId}`);
+		const matchedId = findMatchingEntryId(entryId, tweetId);
+		const isMainTweet = matchedId !== null;
 
 		if (content.entryType === "TimelineTimelineItem" || !content.entryType) {
 			// Single tweet entry
