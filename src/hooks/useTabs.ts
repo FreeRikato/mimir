@@ -3,7 +3,7 @@ import type { ChromeTab, DomainGroup } from "../types";
 import { getCachedTabs, removeExpiredContentCache, setCachedTabs } from "../utils/cache";
 import { clearGroupTabsCache, groupTabs } from "../utils/domainHelpers";
 import { shouldFilterTabUrl } from "../utils/pdf";
-import { isCachedTabsPayloadValid } from "../utils/sessionCacheValidation";
+import { filterValidGroups, isCachedTabsPayloadValid } from "../utils/sessionCacheValidation";
 
 const DEBOUNCE_DELAY = 500; // 500ms debounce for tab events
 
@@ -125,15 +125,25 @@ export function useTabs() {
 		const CACHE_KEY = "mimir_cached_tabs";
 
 		const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
-			if (areaName === "session" && changes[CACHE_KEY]) {
-				// Bug 1.16: validate the full payload shape, not just the
-				// timestamp. A corrupted entry with timestamp:
-				// Number.MAX_SAFE_INTEGER and an empty data array previously
-				// passed the old `Date.now() - timestamp < CACHE_TTL` check
-				// because the diff is a huge negative number.
-				if (isCachedTabsPayloadValid(changes[CACHE_KEY].newValue)) {
-					setGroups(changes[CACHE_KEY].newValue.data);
-				}
+			// COR-8: chrome.storage.onChanged fires for ANY key in the
+			// storage area. We only care about the cached tabs key. Filter
+			// by key here so an unrelated setting toggle (e.g. a feature
+			// flag) does not trigger a full re-render of the tab list.
+			if (areaName !== "session") return;
+			if (!changes[CACHE_KEY]) return;
+			// Bug 1.16: validate the full payload shape, not just the
+			// timestamp. A corrupted entry with timestamp:
+			// Number.MAX_SAFE_INTEGER and an empty data array previously
+			// passed the old `Date.now() - timestamp < CACHE_TTL` check
+			// because the diff is a huge negative number.
+			if (isCachedTabsPayloadValid(changes[CACHE_KEY].newValue)) {
+				// DI-4: also validate the element shape. A payload that
+				// has a valid root but a corrupt array element (e.g.
+				// `tabs: [null]`) used to be applied as-is and crashed
+				// downstream consumers. Drop the corrupt element, keep
+				// the rest.
+				const data = filterValidGroups(changes[CACHE_KEY].newValue.data);
+				setGroups(data);
 			}
 		};
 

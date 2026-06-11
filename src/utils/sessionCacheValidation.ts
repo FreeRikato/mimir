@@ -37,3 +37,32 @@ export function isCachedTabsPayloadValid(value: unknown, now: number = Date.now(
 	}
 	return true;
 }
+
+/**
+ * DI-4: filter a DomainGroup array to drop entries that don't match the
+ * expected element shape. A payload that has a valid root but a corrupt
+ * element (e.g. `tabs: [null]`) used to be applied as-is and crashed
+ * downstream consumers. The strict root validation in
+ * `isCachedTabsPayloadValid` only catches malformed groups, not
+ * individual tab entries inside an otherwise-valid group.
+ */
+export function isChromeTabShape(value: unknown): value is import("../types").ChromeTab {
+	if (!value || typeof value !== "object") return false;
+	const t = value as { id?: unknown; url?: unknown; title?: unknown };
+	return typeof t.id === "number" && typeof t.url === "string" && typeof t.title === "string";
+}
+
+export function filterValidGroups(groups: readonly unknown[]): DomainGroup[] {
+	const out: DomainGroup[] = [];
+	for (const g of groups) {
+		if (!g || typeof g !== "object") continue;
+		const group = g as { domain?: unknown; tabs?: unknown };
+		if (typeof group.domain !== "string") continue;
+		if (!Array.isArray(group.tabs)) continue;
+		const tabs = group.tabs.filter(isChromeTabShape);
+		// Drop the group entirely if every tab is corrupt — empty groups
+		// are still valid (a user with no matching tabs) so we keep them.
+		out.push({ domain: group.domain, tabs });
+	}
+	return out;
+}

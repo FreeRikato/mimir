@@ -303,3 +303,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	// MUST `return true` from their branch (see the handlers above).
 	console.log("Background: Received message:", message);
 });
+
+// ERR-6: top-level error handlers for the service worker. An unhandled
+// `error` or `unhandledrejection` used to take the MV3 worker offline
+// for several minutes (Chrome terminates and only re-spawns on a
+// message). The handlers below log the failure and re-arm themselves
+// so the worker stays responsive. Use `console.warn` (not `error`) to
+// avoid alarming the user; the structured data is what matters.
+// Node test environments (vitest) do not expose `self`. Guard with
+// `typeof self !== "undefined"` so the production worker installs the
+// listeners and the test environment skips them.
+if (typeof self !== "undefined") {
+	self.addEventListener("error", (event) => {
+		console.warn("[mimir-sw] uncaught error:", event.message, event.error);
+	});
+	self.addEventListener("unhandledrejection", (event) => {
+		console.warn("[mimir-sw] unhandled promise rejection:", event.reason);
+	});
+}
