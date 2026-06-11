@@ -180,6 +180,30 @@ async function fetchMoreChildren(
 	return results;
 }
 
+// ERR-4: 429 Retry-After. If the server asks us to wait, wait once.
+// Injectable delay so tests can advance the clock.
+async function fetchWithRateLimit(
+	fetchFn: () => Promise<Response>,
+	maxRetries = 1,
+	delayFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<Response> {
+	let lastResponse: Response | undefined;
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		const response = await fetchFn();
+		if (response.status !== 429) return response;
+		lastResponse = response;
+		if (attempt === maxRetries) return response;
+		const header = response.headers.get("Retry-After");
+		const seconds = header ? Number.parseInt(header, 10) : Number.NaN;
+		if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 60) {
+			// No usable Retry-After; let the caller throw the standard 429 error.
+			return response;
+		}
+		await delayFn(seconds * 1000);
+	}
+	return lastResponse as Response;
+}
+
 export async function fetchRedditPost(
 	url: string,
 	options: RedditFetchOptions = {},
@@ -196,10 +220,12 @@ export async function fetchRedditPost(
 
 	let response: Response;
 	try {
-		response = await fetch(apiUrl, {
-			signal,
-			headers: { Accept: "application/json" },
-		});
+		response = await fetchWithRateLimit(() =>
+			fetch(apiUrl, {
+				signal,
+				headers: { Accept: "application/json" },
+			}),
+		);
 	} catch (err) {
 		if (signal?.aborted) {
 			throw new SubtitleError("Cancelled", "NETWORK_ERROR", undefined, url);
@@ -239,6 +265,16 @@ export async function fetchRedditPost(
 	const post = postChild.data;
 	const commentsListing = json[1];
 
+	// ERR-8: detect an effectively empty payload (no body, no comments, no
+	// more-children stubs) and surface a typed NO_SUBTITLES error instead of
+	// silently returning a blank thread. The traversal result is reused
+	// below for the actual rendering.
+	const noBody = !(post.is_self && post.selftext?.trim());
+	const traversedEmpty = traverseComments(commentsListing?.data?.children ?? []);
+	if (noBody && traversedEmpty.lines.length === 0 && traversedEmpty.moreStubs.length === 0) {
+		throw new SubtitleError("Reddit post has no extractable content", "NO_SUBTITLES", undefined, url);
+	}
+
 	const lines: string[] = [
 		`# ${post.title}`,
 		``,
@@ -256,7 +292,7 @@ export async function fetchRedditPost(
 	lines.push(`## Comments`);
 	lines.push(``);
 
-	const { lines: commentLines, moreStubs } = traverseComments(commentsListing?.data?.children ?? []);
+	const { lines: commentLines, moreStubs } = traversedEmpty;
 	lines.push(...commentLines);
 
 	// Fetch morechildren stubs, capped by maxMoreCalls
