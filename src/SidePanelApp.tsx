@@ -396,7 +396,24 @@ async function extractTab(
 		try {
 			injection = await cancellableExecuteScript(
 				{ target: { tabId: id }, func: getPageHTML },
-				{ timeoutMs: NON_YOUTUBE_TAB_TIMEOUT, signal },
+				{
+					timeoutMs: NON_YOUTUBE_TAB_TIMEOUT,
+					signal,
+					// MEM-1: soft-kill hook. When the hard timeout trips on
+					// a wedged renderer, the wrapper still rejects with
+					// ScriptingTimeoutError, but this callback runs first.
+					// It is a fire-and-forget attempt to clear the
+					// dangling MV3 executeScript from Chrome's queue by
+					// discarding the tab — the user's in-page state on
+					// that tab is lost, which is the reason this is wired
+					// only here and not by default. The wrapper swallows
+					// any throw from the hook.
+					onTimeout: (tabIdHint) => {
+						if (typeof tabIdHint === "number") {
+							chrome.tabs.discard(tabIdHint).catch(() => {});
+						}
+					},
+				},
 			);
 		} catch (scriptingErr) {
 			if (signal?.aborted) return { result: null, error: null };
@@ -1048,9 +1065,11 @@ export function SidePanelApp() {
 
 			setExtractionErrors(errors);
 			checkAndPromptPdfUpload(errors);
-			// UX-2: flip the transient banner when any tab reported
-			// x-not-captured. The state auto-clears after 5s.
-			if (errors.some((e) => e.userMessage.toLowerCase().includes("scroll"))) {
+			// UX-1: flip the transient banner when any tab reported
+			// x-not-captured. Match on the discriminator (cause), NOT the
+			// localized user message — i18n changes would otherwise break
+			// the banner trigger. The state auto-clears after 5s.
+			if (errors.some((e) => e.cause === "x-not-captured")) {
 				setXCapturePending(true);
 			}
 			const validResults = results;
@@ -1232,7 +1251,7 @@ export function SidePanelApp() {
 
 			setToRightExtractionErrors(errors);
 			checkAndPromptPdfUpload(errors);
-			if (errors.some((e) => e.userMessage.toLowerCase().includes("scroll"))) {
+			if (errors.some((e) => e.cause === "x-not-captured")) {
 				setXCapturePending(true);
 			}
 			const validResults = results;
@@ -1372,7 +1391,7 @@ export function SidePanelApp() {
 
 			setHighlightedExtractionErrors(errors);
 			checkAndPromptPdfUpload(errors);
-			if (errors.some((e) => e.userMessage.toLowerCase().includes("scroll"))) {
+			if (errors.some((e) => e.cause === "x-not-captured")) {
 				setXCapturePending(true);
 			}
 			const validResults = results;
