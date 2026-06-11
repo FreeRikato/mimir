@@ -151,7 +151,7 @@ describe("background CANCEL_EXTRACTION handler (COR-13)", () => {
 		vi.resetModules();
 		await import("./index");
 		const sendResponse = vi.fn();
-		const result = registeredCallback!({ type: "CANCEL_EXTRACTION", tabId: 42 }, {}, sendResponse);
+		const result = registeredCallback?.({ type: "CANCEL_EXTRACTION", tabId: 42 }, {}, sendResponse);
 		expect(result).toBe(true);
 		expect(sendResponse).toHaveBeenCalledWith({ success: true, tabId: 42 });
 		expect(discarded).toEqual([]); // discardTab not set
@@ -178,7 +178,7 @@ describe("background CANCEL_EXTRACTION handler (COR-13)", () => {
 		vi.resetModules();
 		await import("./index");
 		const sendResponse = vi.fn();
-		registeredCallback!({ type: "CANCEL_EXTRACTION", tabId: 99, discardTab: true }, {}, sendResponse);
+		registeredCallback?.({ type: "CANCEL_EXTRACTION", tabId: 99, discardTab: true }, {}, sendResponse);
 		// wait a microtask for the discard promise
 		await new Promise((r) => setTimeout(r, 0));
 		expect(discarded).toEqual([99]);
