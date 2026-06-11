@@ -601,3 +601,25 @@ export async function getCacheStats(): Promise<{
 		})),
 	};
 }
+
+// PERF-5: debounced variant of setCachedTabs. Coalesces calls that
+// arrive within DEBOUNCE_MS of each other and writes the most recent
+// payload. Use this for high-frequency call sites (e.g. drag-reorder)
+// where the intermediate states are not observable.
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingData: DomainGroup[] | null = null;
+const DEBOUNCE_MS = 250;
+
+export function setCachedTabsDebounced(data: DomainGroup[]): void {
+	pendingData = data;
+	if (debounceTimer) {
+		clearTimeout(debounceTimer);
+	}
+	debounceTimer = setTimeout(() => {
+		if (pendingData) {
+			void setCachedTabs(pendingData);
+		}
+		pendingData = null;
+		debounceTimer = null;
+	}, DEBOUNCE_MS);
+}

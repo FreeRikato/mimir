@@ -36,8 +36,17 @@ export function useHighlightedTabs() {
 	const fetchHighlightedTabs = useCallback(async () => {
 		const tabs = await getHighlightedTabs();
 		if (!mountedRef.isMounted()) return;
-		setHighlightedTabs(tabs);
-		setHighlightedCount(tabs.length);
+		// COR-1: drop entries with a corrupt shape. The previous version
+		// applied the chrome.tabs.query result as-is; a stub in tests or
+		// a future Chrome change can leak entries without `id` or `url`,
+		// which then crash downstream consumers (TabItem.tsx reads
+		// `tab.id` unconditionally).
+		const valid = tabs.filter(
+			(t): t is ChromeTab =>
+				t !== null && typeof t === "object" && typeof t.id === "number" && typeof t.url === "string",
+		);
+		setHighlightedTabs(valid);
+		setHighlightedCount(valid.length);
 	}, [mountedRef]);
 
 	// Initial load

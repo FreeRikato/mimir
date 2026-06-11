@@ -238,3 +238,32 @@ describe("setCachedTabs (LIF-3: QuotaExceededError handling)", () => {
 		expect(localStorage.store["mimir_cached_tabs"]).toBeDefined();
 	});
 });
+
+// PERF-5: setCachedTabsDebounced coalesces burst writes. A drag-reorder
+// fires the function on every pointer move; without the debounce the
+// full payload is written each time. The test calls the function 5
+// times in quick succession and asserts only one underlying set was
+// issued.
+describe("setCachedTabsDebounced (PERF-5: debounce writes)", () => {
+	it("coalesces 5 rapid calls into a single debounced write", async () => {
+		// The session storage wrapper exposes a `reset()` method that
+		// drops the underlying store. We rely on the test-level
+		// beforeEach to have called reset() already.
+		let tabSetCalls = 0;
+		const originalSet = session.set;
+		session.set = vi.fn(async (items) => {
+			if (items && "mimir_cached_tabs" in items) tabSetCalls += 1;
+			await originalSet(items);
+		});
+		vi.resetModules();
+		const { setCachedTabsDebounced } = await import("./cache");
+		setCachedTabsDebounced([{ domain: "a", tabs: [] }]);
+		setCachedTabsDebounced([{ domain: "b", tabs: [] }]);
+		setCachedTabsDebounced([{ domain: "c", tabs: [] }]);
+		setCachedTabsDebounced([{ domain: "d", tabs: [] }]);
+		setCachedTabsDebounced([{ domain: "e", tabs: [] }]);
+		await new Promise((r) => setTimeout(r, 400));
+		expect(tabSetCalls).toBe(1);
+		expect(session.store["mimir_cached_tabs"]).toBeDefined();
+	});
+});
