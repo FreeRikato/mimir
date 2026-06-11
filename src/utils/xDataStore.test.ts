@@ -102,3 +102,54 @@ describe("XDataStore (MEM-1: LRU cap)", () => {
 		expect(MAX_X_DATA_ENTRIES).toBe(50);
 	});
 });
+
+// MEM-2 follow-up: the xTwitter content script mirrors store writes
+// into `window.__mimiXData[id]`. The store evicts the LRU key when
+// the cap is exceeded, but the mirror used to be silently orphaned —
+// `w.__mimiXData` could hold MORE entries than the store. The fix
+// adds an onEvict hook the script can use to delete the orphaned
+// mirror keys at the same time the store drops them.
+describe("XDataStore (MEM-2 follow-up: onEvict hook)", () => {
+	it("invokes onEvict(id) when the LRU entry is dropped because the cap was exceeded", () => {
+		const evicted: string[] = [];
+		const store = createXDataStore(3);
+		store.set("a", 1);
+		store.set("b", 2);
+		store.set("c", 3);
+		// Force one eviction: the 4th distinct key kicks out "a".
+		store.set("d", 4, (id) => evicted.push(id));
+		expect(evicted).toEqual(["a"]);
+		expect(store.has("a")).toBe(false);
+	});
+
+	it("invokes onEvict(id) on every over-cap eviction in a burst write", () => {
+		const evicted: string[] = [];
+		const store = createXDataStore(2);
+		store.set("a", 1);
+		store.set("b", 2);
+		store.set("c", 3, (id) => evicted.push(id));
+		store.set("d", 4, (id) => evicted.push(id));
+		store.set("e", 5, (id) => evicted.push(id));
+		expect(evicted).toEqual(["a", "b", "c"]);
+		expect(store.size()).toBe(2);
+	});
+
+	it("does NOT invoke onEvict when an existing id is re-set (LRU update, no eviction)", () => {
+		const evicted: string[] = [];
+		const store = createXDataStore(2);
+		store.set("a", 1);
+		store.set("b", 2);
+		store.set("a", 11, (id) => evicted.push(id));
+		expect(evicted).toEqual([]);
+		expect(store.size()).toBe(2);
+	});
+
+	it("omitting the onEvict hook is a no-op (existing callers are not affected)", () => {
+		const store = createXDataStore(2);
+		store.set("a", 1);
+		store.set("b", 2);
+		// No throw, no eviction callback needed.
+		store.set("c", 3);
+		expect(store.has("a")).toBe(false);
+	});
+});

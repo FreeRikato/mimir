@@ -22,8 +22,14 @@
 export const MAX_X_DATA_ENTRIES = 50;
 
 export interface XDataStore {
-	/** Insert or update an entry. Evicts the LRU entry if the cap is exceeded. */
-	set(id: string, data: unknown): void;
+	/**
+	 * Insert or update an entry. Evicts the LRU entry if the cap is
+	 * exceeded. The optional `onEvict` callback is fired once per key
+	 * that the store drops to make room — the content script uses it
+	 * to keep the `window.__mimiXData` mirror in sync with the LRU
+	 * (MEM-2 follow-up).
+	 */
+	set(id: string, data: unknown, onEvict?: (id: string) => void): void;
 	/** Read an entry. Promotes it to most-recently-used. */
 	get(id: string): unknown | undefined;
 	/** Whether the id is currently held. Does NOT touch LRU order. */
@@ -61,17 +67,28 @@ export function createXDataStore(maxEntries: number = MAX_X_DATA_ENTRIES): XData
 		return value;
 	};
 
-	const evictIfOver = (): void => {
+	const evictIfOver = (onEvict?: (id: string) => void): void => {
 		while (entries.size > maxEntries) {
 			// Map iteration is insertion order — the first key is the LRU entry.
 			const oldest = entries.keys().next().value;
 			if (oldest === undefined) break;
 			entries.delete(oldest);
+			// MEM-2 follow-up: notify callers so they can drop their
+			// mirror copies (e.g. `window.__mimiXData`). The callback is
+			// wrapped in try/catch so a throw cannot break the eviction
+			// loop or leak the entry.
+			if (onEvict) {
+				try {
+					onEvict(oldest);
+				} catch {
+					// swallow — eviction must continue
+				}
+			}
 		}
 	};
 
 	return {
-		set(id, data) {
+		set(id, data, onEvict) {
 			if (disposed) return;
 			// Treat undefined as a delete so callers can pass `undefined` to evict.
 			if (data === undefined) {
@@ -82,7 +99,7 @@ export function createXDataStore(maxEntries: number = MAX_X_DATA_ENTRIES): XData
 			// to MRU position.
 			if (entries.has(id)) entries.delete(id);
 			entries.set(id, data);
-			evictIfOver();
+			evictIfOver(onEvict);
 		},
 		get(id) {
 			if (disposed) return undefined;

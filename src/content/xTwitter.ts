@@ -54,7 +54,13 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
 					const vars = JSON.parse(rawVars) as { focalTweetId?: string };
 					const tweetId = vars.focalTweetId;
 					if (tweetId) {
-						store.set(tweetId, data);
+						// MEM-2 follow-up: the onEvict hook keeps the
+						// `window.__mimiXData` mirror in sync with the
+						// LRU so the window property can never hold
+						// more entries than the store itself.
+						store.set(tweetId, data, (evictedId) => {
+							syncToWindow(evictedId, undefined);
+						});
 						syncToWindow(tweetId, data);
 					}
 				} catch {
