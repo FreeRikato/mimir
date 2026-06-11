@@ -10,6 +10,7 @@ import {
 	Settings,
 	X,
 } from "lucide-react";
+import { useState } from "react";
 import type { ExtractionErrorInfo, ExtractionStatus } from "../types";
 
 interface FooterProps {
@@ -61,6 +62,15 @@ export function Footer({
 	// Settings props
 	onOpenSettings,
 }: FooterProps) {
+	// UX-3: brief pressed highlight on click. Tracks which button was last
+	// pressed; auto-clears after 50ms so a double-click still produces a
+	// visible pulse.
+	const [pressedButton, setPressedButton] = useState<"right" | "highlighted" | "copy" | null>(null);
+	const flash = (key: "right" | "highlighted" | "copy") => {
+		setPressedButton(key);
+		setTimeout(() => setPressedButton((prev) => (prev === key ? null : prev)), 50);
+	};
+
 	const isExtractDisabled = selectedCount === 0 || isExtracting || isExtractingToRight || isExtractingHighlighted;
 	const showCancel = selectedCount > 0 && !isExtracting && !isExtractingToRight && !isExtractingHighlighted;
 	const isExtractToRightDisabled =
@@ -123,7 +133,7 @@ export function Footer({
 					<button
 						onClick={onExtractToRight}
 						disabled={isExtractToRightDisabled}
-						className={getButtonClassName(isExtractToRightDisabled, toRightExtractionStatus, "orange")}
+						className={`${getButtonClassName(isExtractToRightDisabled, toRightExtractionStatus, "orange")} ${pressedButton === "right" ? "ring-1 ring-white/30" : ""}`}
 						title="Extract content from tabs to the right of current tab"
 					>
 						{isExtractingToRight ? (
@@ -150,7 +160,7 @@ export function Footer({
 					<button
 						onClick={onExtractHighlighted}
 						disabled={isExtractHighlightedDisabled}
-						className={getButtonClassName(isExtractHighlightedDisabled, highlightedExtractionStatus, "purple")}
+						className={`${getButtonClassName(isExtractHighlightedDisabled, highlightedExtractionStatus, "purple")} ${pressedButton === "highlighted" ? "ring-1 ring-white/30" : ""}`}
 						title="Extract content from tabs selected in Chrome's tab bar (Cmd+click / Shift+click)"
 					>
 						{isExtractingHighlighted ? (
@@ -169,9 +179,12 @@ export function Footer({
 
 				{/* Copy Button */}
 				<button
-					onClick={onExtract}
+					onClick={() => {
+						flash("copy");
+						onExtract();
+					}}
 					disabled={isExtractDisabled}
-					className={getButtonClassName(isExtractDisabled, extractionStatus, "teal")}
+					className={`${getButtonClassName(isExtractDisabled, extractionStatus, "teal")} ${pressedButton === "copy" ? "ring-1 ring-white/30" : ""}`}
 					title={`Copy ${selectedCount} selected tab${selectedCount !== 1 ? "s" : ""} to clipboard`}
 				>
 					{isExtracting ? (
