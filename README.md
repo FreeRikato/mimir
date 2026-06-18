@@ -148,3 +148,9 @@ precedence — if a binding does not fire, something else owns that combination.
   `text-glass-muted`. Use these — do not invent new opacity values.
 - **Long lists** use `react-virtuoso` (see `HistoryPanel`). Do not render >100 items
   via `.map` + native scroll.
+
+## License
+
+Source-available under the [PolyForm Noncommercial 1.0.0](LICENSE) — free for
+personal, educational, and other non-commercial use. **Commercial use requires a
+[separate license](LICENSE-COMMERCIAL.md)**; contact the maintainers for terms.
